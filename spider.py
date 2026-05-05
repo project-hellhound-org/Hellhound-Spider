@@ -833,7 +833,7 @@ async def fetch(session, method, url, rl, max_retries=3, base_delay=0.5, **kw):
     for attempt in range(max_retries + 1):
         try:
             async with session.request(method, url, ssl=False, **kw) as resp:
-                if resp.status == 429:
+                if resp.status == 429 or (resp.status == 403 and attempt > 0):
                     rl.backoff(domain)
                     await asyncio.sleep(float(resp.headers.get("Retry-After", base_delay * (2**attempt))))
                     continue
@@ -1394,8 +1394,26 @@ class Extractor:
                     msg = str(data.get("error", "") or data.get("message", "") or data.get("detail", "")).lower()
                     if any(ind in msg for ind in cls._SOFT_404_INDICATORS):
                         return True
-            except Exception as e:
-                self.emit.warn(f"[Worker] Error processing {url}: {e}")
+            except Exception:
+                pass
+        return False
+
+    @classmethod
+    def is_bot_blocked(cls, body: str) -> bool:
+        """Heuristic check for common bot-protection/WAF challenge pages."""
+        if not body:
+            return False
+        body_lo = body.lower()
+        # Look for challenge/WAF indicators
+        indicators = (
+            "cloudflare", "ddos protection", "checking your browser",
+            "access denied", "security check", "captcha", "verification required",
+            "one more step", "sucuri", "incapsula", "akamai", "perimeterx",
+        )
+        if any(ind in body_lo for ind in indicators):
+            # Only count as blocked if it's a small "gate" page
+            if len(body) < 15000:
+                return True
         return False
 
     @classmethod
@@ -2082,28 +2100,32 @@ class SPAScanner:
                 await asyncio.sleep(1.5)
                 await page.evaluate("window.scrollTo(0, 0)")
                 await asyncio.sleep(0.5)
-            except Exception as e:
-                self.emit.warn(f"[Worker] Error processing {url}: {e}")
+            except Exception:
+                pass
             # S4: wait for SPA to fully settle before interacting
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
                 await asyncio.sleep(1.0)
-            except Exception as e:
-                self.emit.warn(f"[Worker] Error processing {url}: {e}")
+            except Exception:
+                pass
             if self._enable_spa_interact:
                 await self._interact(page)
             await self._harvest_dom(page)
             await self._harvest_hash(page)
                 
+            # Extract cookies for synchronization
+            acquired_cookies = await context.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in acquired_cookies}
+            
             if self.screenshot_cfg:
                 # Keep browser alive for screenshots later
                 self.emit.always_info("[SPA] SPA harvest complete — keeping browser alive for screenshots")
-                return browser, context, page
+                return browser, context, page, cookie_dict
             
             await browser.close()
             await self._pw.stop()
             self.emit.always_info("[SPA] Dynamic analysis complete")
-            return None
+            return cookie_dict
         except Exception as e:
             self.emit.warn(f"[SPA] Error: {e}")
             return None
@@ -2563,6 +2585,26 @@ class Spider:
                 for m in re.finditer(r'"(?:url|@id|contentUrl|embedUrl)"\s*:\s*"([^"]+)"', tag.string):
                     self._discover_url(m.group(1), depth+1, "JSONLD", show_feed=True)
 
+    async def _check_sourcemap(self, session, url):
+        # Hardened: probe for .map file and verify its legitimacy
+        if not url.split('?')[0].endswith('.js'):
+            return
+        map_url = url.split('?')[0] + ".map"
+        s, _, text = await fetch(session, "GET", map_url, self.rl)
+        if s == 200 and text:
+            try:
+                # Basic validation: must be JSON and have key indicators
+                if '"sources":' in text and '"mappings":' in text:
+                    self.store.add_sourcemap(map_url, url)
+                    self.emit.warn(f"[Sourcemap] Exposed JS source mapping → {map_url}")
+                    # Extract endpoints from sourcemap if possible
+                    for m in re.finditer(r'"(/[a-zA-Z0-9_\-\/]+)"', text):
+                        path = m.group(1)
+                        if len(path) > 3:
+                            self.store.add_endpoint(urljoin(url, path), source="SourceMap", score=Conf.HIGH)
+            except Exception:
+                pass
+
     async def _process_js(self, url, text, session):
         ep_count = 0
         param_count = 0
@@ -2613,6 +2655,13 @@ class Spider:
                 self.store.add_secret(body[:200], 'Error_Stack_Trace', url)
                 self.emit.warn(f'[Error-Leak] Verbose error at {url}')
         elif s == 200:
+            if Extractor.is_bot_blocked(body):
+                self.emit.warn(f"[Bot-Blocked] Target redirected to challenge page: {url}")
+                # We can't easily trigger a retry from here without complex queue logic, 
+                # but marking it helps the user understand why discovery failed.
+                self.store.add_endpoint(url, source="Blocked_Response", score=Conf.LOW)
+                return
+
             if Extractor.is_soft_404(body, s):
                 self.emit.info(f'[Soft-404] Dropping non-existent route: {url}')
                 return
@@ -2694,6 +2743,14 @@ class Spider:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                       "application/json;q=0.8,*/*;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         }
         req_headers.update(self.extra_headers)
         connector = aiohttp.TCPConnector(limit=self.cfg.concurrency, ttl_dns_cache=300, ssl=False)
@@ -2750,7 +2807,21 @@ class Spider:
                                      self.extra_headers, self.queue, self.is_valid,
                                      enable_spa_interact=self.cfg.enable_spa_interact,
                                      screenshot_cfg=screenshot_cfg)
-                    spa_ctx = await spa.run()
+                    spa_res = await spa.run()
+                    if spa_res:
+                        if isinstance(spa_res, tuple):
+                            # (browser, context, page, cookies)
+                            spa_ctx = spa_res[:3]
+                            sync_cookies = spa_res[3]
+                        else:
+                            sync_cookies = spa_res
+                        
+                        if sync_cookies:
+                            before = len(session.cookie_jar)
+                            session.cookie_jar.update_cookies(sync_cookies)
+                            after = len(session.cookie_jar)
+                            if after > before:
+                                self.emit.always_success(f"[Sync] Synchronized {after-before} cookies from SPA session")
                 self.emit.always_info(
                     f"[Spider] Crawl started — depth={self.cfg.max_depth}, "
                     f"concurrency={self.cfg.concurrency}, "
