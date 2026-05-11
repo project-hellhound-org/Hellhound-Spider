@@ -48,7 +48,7 @@ except Exception as e:
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "12.3"
+VERSION      = "12.4"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -606,20 +606,67 @@ def print_results(intel: dict, target: str, elapsed: float,
         if interesting:
             emit.section(f"PARAMETER MAP  ({len(interesting)} endpoints)", orbital=True)
             for ep in interesting:
-                url = ep.get("url","")
-                all_p = ep.get("params", [])
+                url    = ep.get("url","")
+                # params in the export is already a flat sorted list (from formatted_eps)
+                all_p  = ep.get("params", [])
+                if isinstance(all_p, dict):
+                    # fallback: flatten if called on raw store endpoint
+                    all_p = [p for bucket in all_p.values() for p in bucket]
                 if not all_p: continue
 
                 method = ep.get("method", "GET")
                 mc = { "GET": C.GD, "POST": C.Y, "PUT": C.O, "PATCH": C.O, "DELETE": C.R }.get(method, C.GL)
-                disp = url if len(url) <= 64 else url[:61] + "…"
+                # Never truncate — full URL must be readable/copyable by the user
+                disp = url
+
+                # Classify params: highlight hidden fields and file inputs
+                ffd     = ep.get("form_fields_detail", [])
+                ffd_map = {f["name"]: f for f in ffd}
+                def _param_tag(p):
+                    fd = ffd_map.get(p)
+                    if not fd:
+                        return p
+                    if fd.get("hidden"):
+                        return f"{p}[hidden]"
+                    if fd.get("file"):
+                        return f"{p}[file]"
+                    return p
+
+                tagged_params = [_param_tag(p) for p in all_p]
 
                 if nc:
                     print(f"    {method:<7} {disp}")
-                    print(f"      params: {', '.join(all_p)}")
+                    print(f"      params: {', '.join(tagged_params)}")
                 else:
+                    # Method bullet on its own line, full URL indented below it
                     print(f"  {mc}●{C.RST} {C.W}{method:<7}{C.RST} {C.B}{C.W}{disp}{C.RST}")
-                    emit.leader_row("PARAMS", ", ".join(all_p))
+                    param_str = ", ".join(
+                        f"{C.GR}{p}{C.RST}" if "[hidden]" in p else
+                        f"{C.MG}{p}{C.RST}" if "[file]" in p else
+                        f"{C.W}{p}{C.RST}"
+                        for p in tagged_params
+                    )
+                    emit.leader_row("PARAMS", param_str)
+
+        # ── JS orphan params (contextual, not injectable) ────────────
+        orphans = intel.get("js_orphan_params", [])
+        if orphans:
+            total_orphan = sum(len(o["params"]) for o in orphans)
+            emit.section(f"JS ORPHAN PARAMS  ({total_orphan} unattributed params, {len(orphans)} files)", orbital=True)
+            if not nc:
+                emit.row("Note", "These params were found in JS files with no resolvable target URL",
+                         icon="○", label_colour=C.R, value_colour=C.Y)
+                emit.row("Usage", "Wordlist / fuzz hints — do NOT inject at the JS file URL",
+                         icon="○", label_colour=C.R, value_colour=C.Y)
+            for item in orphans[:20]:
+                js_file = item["js_file"]
+                params  = item["params"]
+                short   = js_file if len(js_file) <= 60 else js_file[:57] + "…"
+                if nc:
+                    print(f"    {short}  ->  {', '.join(params)}")
+                else:
+                    print(f"  {C.GR}○{C.RST} {C.GR}{short}{C.RST}")
+                    emit.leader_row("HINTS", ", ".join(f"{C.CYD}{p}{C.RST}" for p in params))
 
     # ── auth-walled ───────────────────────────────────────────────────
     auth_eps = [e for e in eps if e.get("auth_required")]
@@ -634,8 +681,32 @@ def print_results(intel: dict, target: str, elapsed: float,
     robots = intel.get("robots_disallowed", [])
     if robots:
         emit.section(f"ROBOTS DISALLOWED  ({len(robots)} paths)", orbital=True)
+        all_ep_urls = [e.get("url","") for e in eps]
+        parsed_target = intel.get("meta",{}).get("target","")
         for path in robots[:50]:
             emit.row("Disallow", path, icon="●", label_colour=C.O)
+            # Find ALL crawled endpoints under this disallowed path — no cap
+            seen = set()
+            children = []
+            for u in all_ep_urls:
+                if not u or u == parsed_target or u in seen:
+                    continue
+                if ("/" + path.lstrip("/")) in urlparse(u).path:
+                    seen.add(u)
+                    children.append(u)
+            children.sort()
+            INLINE_LIMIT = 5
+            for child_url in children[:INLINE_LIMIT]:
+                if nc:
+                    print(f"       └─ {child_url}")
+                else:
+                    print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
+            overflow = len(children) - INLINE_LIMIT
+            if overflow > 0:
+                if nc:
+                    print(f"       └─ [+{overflow} more — all in JSON report]")
+                else:
+                    print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — all in JSON report]{C.RST}")
 
     # ── tech stack ────────────────────────────────────────────────────
     tech_list = intel.get("tech_stack", [])
@@ -913,6 +984,10 @@ class Store:
         self.sourcemaps:   List[dict]       = []
         self.extracted_data: List[dict]     = []
         self._extracted_seen: Set[tuple]    = set()
+        # JS params that couldn't be resolved to a real API endpoint.
+        # Keyed by js_file_url → list of param names.
+        # Downstream agents should treat these as "discovered but untargeted".
+        self.js_orphan_params: Dict[str, List[str]] = {}
 
     def _key(self, url, method):
         return f"{method.upper()}:{cluster(normalize(url))}"
@@ -927,6 +1002,10 @@ class Store:
             "source": [], "confidence": 0, "confidence_label": "LOW",
             "auth_required": False, "parameter_sensitive": False,
             "observed_status": [], "baseline": None,
+            # Form field rich metadata — populated by _process_html form parser
+            # Each entry: {name, type, hidden, file, required, value}
+            # Downstream agents use this to distinguish injectable vs CSRF-token fields
+            "form_fields_detail": [],
             # v12.3 additions
             "admin_panel":          False,
             "auth_classification":  [],
@@ -1008,6 +1087,18 @@ class Store:
             ep["confidence"] = min(ep["confidence"] + 1, Conf.CONFIRMED)
             ep["confidence_label"] = Conf.label(ep["confidence"])
         return bool(new)
+
+    def add_js_orphan_params(self, js_file_url: str, params: List[str]):
+        """
+        Store params found in a JS file that couldn't be attributed to a
+        specific API endpoint URL. These are NOT injectable endpoints — they
+        are contextual hints that the downstream agent may use for fuzzing
+        or wordlist generation, but should never be treated as crawlable targets.
+        """
+        bucket = self.js_orphan_params.setdefault(js_file_url, [])
+        for p in params:
+            if p and p not in bucket:
+                bucket.append(p)
 
     # High-risk param names — any endpoint bearing these warrants extra scrutiny
     _RISK_PARAMS = frozenset({
@@ -1173,6 +1264,9 @@ class Store:
             "extracted_data":     len(self.extracted_data),
             "robots_disallowed":  len(self.robots_paths),
             "screenshots":        sum(1 for e in eps if e.get("screenshot")),
+            # JS orphan params — params discovered in JS files with no resolved endpoint
+            "js_orphan_param_files": len(self.js_orphan_params),
+            "js_orphan_param_count": sum(len(v) for v in self.js_orphan_params.values()),
         }
         
         # FIX 1 & 2: Format endpoints for export
@@ -1200,6 +1294,9 @@ class Store:
                 "observed_status": e["observed_status"],
                 "params": sorted(all_params),
                 "params_detail": e["params"],
+                # Rich form field metadata — type, hidden, file, required flags.
+                # Use this to skip CSRF tokens (hidden) and prioritise real input fields.
+                "form_fields_detail": e.get("form_fields_detail", []),
                 "auth_required": e["auth_required"],
                 "source": e["source"],
                 "admin_panel": e.get("admin_panel", False),
@@ -1222,6 +1319,14 @@ class Store:
             "robots_disallowed": self.robots_paths,
             "tech_stack": sorted(self.tech_stack),
             "extracted_data": self.extracted_data if self.extracted_data is not None else [],
+            # JS params that could not be attributed to a specific endpoint URL.
+            # Format: [{"js_file": "https://...", "params": ["username", "password"]}, ...]
+            # These are NOT injectable targets — use as wordlist hints only.
+            "js_orphan_params": [
+                {"js_file": js_url, "params": sorted(set(params))}
+                for js_url, params in self.js_orphan_params.items()
+                if params
+            ],
         }
 
         if fmt == "json":
@@ -1473,19 +1578,38 @@ class Extractor:
 
     @classmethod
     def js_params(cls, text, base_url, store, emit):
+        """
+        Extract JS payload params and attach them to the resolved API endpoint URL.
+
+        CRITICAL RULE: if _find_url_for_params falls back to base_url AND base_url
+        is a .js file, do NOT create an endpoint at the JS file path — that endpoint
+        is not injectable. Instead, park those params in store.js_orphan_params so
+        the downstream agent knows they exist but has no associated HTTP target.
+        """
         var_map = cls._build_var_url_map(text)
+        _is_js_file = base_url.split("?")[0].lower().endswith(".js")
         for pat in cls._PARAM_RE:
             for m in re.finditer(pat, text, re.S):
                 keys = cls._obj_keys(m.group(1) if m.lastindex else m.group(0))
                 if not keys:
                     continue
-                # Harden: filter out high-noise JS library params
                 keys = [k for k in keys if k not in cls._JS_PARAM_STOPLIST]
                 if not keys:
                     continue
                 turl = cls._find_url_for_params(text, m.start(), m.end(), base_url, var_map)
-                if store.add_js_params(turl, keys):
-                    emit.info("[JS-Params] %s -> %s" % (keys, turl))
+                resolved = (turl != base_url)
+                if resolved:
+                    # Resolved to a real API endpoint — attach params there
+                    if store.add_js_params(turl, keys):
+                        emit.info("[JS-Params] %s -> %s" % (keys, turl))
+                elif _is_js_file:
+                    # Fell back to a JS file URL — park as orphan, not as injectable endpoint
+                    store.add_js_orphan_params(base_url, keys)
+                    emit.info("[JS-Orphan] %s (no target URL found in %s)" % (keys, base_url))
+                else:
+                    # base_url is an HTML page — attaching to it is legitimate
+                    if store.add_js_params(turl, keys):
+                        emit.info("[JS-Params] %s -> %s" % (keys, turl))
 
     @classmethod
     def extract_data(cls, body: str, url: str, store, emit):
@@ -1753,7 +1877,7 @@ async def probe_graphql(session, base, store, emit, rl):
                 store.graphql.append({"url": url, "types_count": len(types), "schema": schema})
                 emit.warn(f"[GraphQL] {len(types)} types exposed — disable introspection!")
             except Exception as e:
-                self.emit.warn(f"[Worker] Error processing {url}: {e}")
+                emit.warn(f"[GraphQL] Parse error: {e}")
             return
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1805,13 +1929,6 @@ async def probe_openapi(session, base, store, emit, rl):
                 count += 1
         emit.always_success(f"[OpenAPI] Mapped {count} endpoints from spec")
         return
-
-# ══════════════════════════════════════════════════════════════════════
-# INTELLIGENT PROBER
-# ══════════════════════════════════════════════════════════════════════
-
-
-        return found
 
 # ══════════════════════════════════════════════════════════════════════
 # ROBOTS + SITEMAP PARSER
@@ -2204,10 +2321,13 @@ class SPAScanner:
             links = await page.evaluate("""
                 () => Array.from(document.querySelectorAll('[href],[src],[action]'))
                     .map(e => e.href || e.src || e.action)
-                    .filter(u => u && u.startsWith('/'))
+                    .filter(u => u && (u.startsWith('/') || u.startsWith('http')))
             """)
             for path in (links or []):
-                full = urljoin(self.target_url, path) if path.startswith("/") else path
+                if path.startswith("/"):
+                    full = urljoin(self.target_url, path)
+                else:
+                    full = path  # already absolute
                 if self.is_valid(full):
                     self.store.add_endpoint(full, source="SPA_DOM", score=Conf.MEDIUM)
                     self.queue.put_nowait((full, 1, "SPA_DOM"))
@@ -2550,14 +2670,34 @@ class Spider:
             method = (form.get("method") or "POST").upper()
             # Exhaustive field extraction: all named elements + data-* param hints
             inputs = []
+            form_fields_detail = []  # rich metadata for downstream agents
             for el in form.find_all(["input","select","textarea","button","datalist"]):
                 nm = el.get("name","").strip()
+                el_type = el.get("type","text").lower()
+                is_hidden = el_type == "hidden"
+                is_file   = el_type == "file"
                 if nm and nm not in inputs:
                     inputs.append(nm)
+                    form_fields_detail.append({
+                        "name":     nm,
+                        "type":     el_type,
+                        "hidden":   is_hidden,
+                        "file":     is_file,
+                        "required": el.has_attr("required"),
+                        "value":    el.get("value","") if is_hidden else "",
+                    })
                 for da in ("data-param","data-field","data-name","data-key","data-input"):
                     dv = el.get(da,"").strip()
                     if dv and dv not in inputs:
                         inputs.append(dv)
+                        form_fields_detail.append({
+                            "name":   dv,
+                            "type":   "data-attr",
+                            "hidden": False,
+                            "file":   False,
+                            "required": False,
+                            "value":  "",
+                        })
             # data-* on the form element itself (e.g. data-params="field1,field2")
             for da in ("data-params","data-fields","data-inputs"):
                 dv = form.get(da,"").strip()
@@ -2566,6 +2706,14 @@ class Spider:
                         p = part.strip()
                         if p and p not in inputs:
                             inputs.append(p)
+                            form_fields_detail.append({
+                                "name":   p,
+                                "type":   "data-attr",
+                                "hidden": False,
+                                "file":   False,
+                                "required": False,
+                                "value":  "",
+                            })
             if inputs: self.emit.info("[Form] %s %s <- [%s]" % (method, full, ", ".join(inputs)))
             # Fix C: register exact URL, write params directly to form bucket
             self.store.add_endpoint(full, method=method, source="Form", score=Conf.HIGH)
@@ -2576,6 +2724,14 @@ class Spider:
                 for _p in inputs:
                     if _p and _p not in _ep["params"]["form"]:
                         _ep["params"]["form"].append(_p)
+                # Merge form_fields_detail — preserve first observation per field name
+                existing_names = {f["name"] for f in _ep.get("form_fields_detail", [])}
+                if "form_fields_detail" not in _ep:
+                    _ep["form_fields_detail"] = []
+                for fd in form_fields_detail:
+                    if fd["name"] not in existing_names:
+                        _ep["form_fields_detail"].append(fd)
+                        existing_names.add(fd["name"])
             self._discover_url(full, depth+1, "Form_Action", show_feed=True)
         for attr in ("data-src","data-href","data-url"):
             for tag in soup.find_all(attrs={attr: True}):
