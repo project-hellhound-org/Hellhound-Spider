@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-  HELLHOUND SPIDER  v12.3  —  Standalone Recon Engine
+  HELLHOUND SPIDER  v12.4  —  Standalone Recon Engine
 
   Full SPA + Non-SPA Crawler | robots.txt | sitemap.xml | JS Analysis
 
@@ -370,6 +370,17 @@ class Emit:
             return
         self._w(f"  {C.GR}├─{C.RST} {C.BG_RED} COMMENT LEAK {C.RST} {C.Y}{comment}{C.RST}")
 
+    def security_txt_field(self, field: str, value: str, flagged: bool = False):
+        """Display a parsed security.txt field; red-flagged if sensitive."""
+        if self._nc:
+            tag = "[LEAK]" if flagged else "[SecurityTxt]"
+            print(f"  |  {tag} {field}: {value}")
+            return
+        if flagged:
+            self._w(f"  {C.GR}├─{C.RST} {C.BG_RED} LEAK {C.RST} {C.R}{field}:{C.RST} {C.Y}{value}{C.RST}")
+        else:
+            self._w(f"  {C.GR}├─{C.RST} {C.CY}{field}:{C.RST} {C.W}{value}{C.RST}")
+
     # ── structured output helpers (used by print_results) ────────────
 
     def section(self, title: str, orbital: bool = False):
@@ -547,8 +558,20 @@ def print_results(intel: dict, target: str, elapsed: float,
                      f"Exposed — {item.get('url','')}")
 
     for item in secrets:
-        emit.finding(item.get("type", "Secret"), "HIGH",
-                     f"{str(item.get('content',''))[:70]}  ← {item.get('source','')}")
+        stype   = item.get("type", "Secret")
+        content = str(item.get("content", ""))
+        source  = item.get("source", "")
+        # Calibrated severity for SecurityTxt findings
+        if stype in ("SecurityTxt_Comment_Leak", "SecurityTxt_Encryption_Key",
+                     "SecurityTxt_Canonical_CrossDomain"):
+            sev = "HIGH"
+        elif stype in ("SecurityTxt_Contact_Email",):
+            sev = "MEDIUM"
+        elif stype in ("SecurityTxt_Expired",):
+            sev = "LOW"
+        else:
+            sev = "HIGH"
+        emit.finding(stype, sev, f"{content[:70]}  ← {source}")
 
     # ── extraction findings ──
     extracted = intel.get("extracted_data", [])
@@ -591,8 +614,21 @@ def print_results(intel: dict, target: str, elapsed: float,
         backup_eps = [e for e in eps if all(s in _NOISE_SOURCES for s in e.get("source", ["Crawl"]))]
         sorted_eps = sorted(real_eps, key=lambda e: (order.get(e.get("confidence", "LOW"), 4), e.get("url", ""))) + \
                      sorted(backup_eps, key=lambda e: e.get("url", ""))
-        shown    = sorted_eps[:200]
-        overflow = len(sorted_eps) - len(shown)
+        # QS-variant dedup for terminal display only.
+        # /login and /login?return_to=https://... share a cluster — show once.
+        # All variants still exist in the JSON for agents.
+        _disp_clusters: set = set()
+        deduped = []
+        for ep in sorted_eps:
+            _cl = ep.get("cluster", ep.get("url",""))
+            if _cl and _cl in _disp_clusters and not ep.get("params"):
+                continue   # pure QS variant with no new params — skip display
+            if _cl:
+                _disp_clusters.add(_cl)
+            deduped.append(ep)
+
+        shown    = deduped[:200]
+        overflow = len(deduped) - len(shown)
 
         for ep in shown:
             emit.endpoint_row(ep)
@@ -668,6 +704,21 @@ def print_results(intel: dict, target: str, elapsed: float,
                     print(f"  {C.GR}○{C.RST} {C.GR}{short}{C.RST}")
                     emit.leader_row("HINTS", ", ".join(f"{C.CYD}{p}{C.RST}" for p in params))
 
+    # ── websocket / socket.io detected ──────────────────────────────────
+    socketio = intel.get("socketio_endpoints", [])
+    if socketio:
+        emit.section(f"WEBSOCKET DETECTED  ({len(socketio)} socket.io endpoint(s))", orbital=True)
+        if not nc:
+            emit.row("Note", "socket.io active — real-time features present (chat, notifications, live data)",
+                     icon="○", label_colour=C.CY, value_colour=C.W)
+            emit.row("Note", "Polling URLs contain ephemeral session tokens — not injectable targets",
+                     icon="○", label_colour=C.R, value_colour=C.Y)
+        for sio in socketio:
+            if nc:
+                print(f"    WS  {sio['base_url']}")
+            else:
+                print(f"  {C.CY}◈{C.RST} {C.CY}WS{C.RST}  {C.W}{sio['base_url']}{C.RST}")
+
     # ── auth-walled ───────────────────────────────────────────────────
     auth_eps = [e for e in eps if e.get("auth_required")]
     if auth_eps:
@@ -676,6 +727,98 @@ def print_results(intel: dict, target: str, elapsed: float,
             method = ep.get("methods",["GET"])[0]
             url = ep.get("url","")
             emit.row(method, url, icon="⬢", label_colour=C.RD)
+
+    # ── security.txt findings ────────────────────────────────────────
+    _sec_txt_types = {
+        "SecurityTxt_Comment_Leak",
+        "SecurityTxt_Contact_Email",
+        "SecurityTxt_Contact_URL",
+        "SecurityTxt_Encryption_Key",
+        "SecurityTxt_Canonical_CrossDomain",
+        "SecurityTxt_Expired",
+    }
+    sec_findings = [s for s in intel.get("secrets", []) if s.get("type","") in _sec_txt_types]
+    if sec_findings:
+        emit.section(f"SECURITY.TXT  ({len(sec_findings)} finding(s))", orbital=True)
+
+        # Group by type for clean display — mirrors the robots disallowed tree style
+        _LABEL_MAP = {
+            "SecurityTxt_Comment_Leak":          ("Comment Leak",    True),
+            "SecurityTxt_Contact_Email":          ("Contact Email",   False),
+            "SecurityTxt_Contact_URL":            ("Contact URL",     False),
+            "SecurityTxt_Encryption_Key":         ("Encryption Key",  False),
+            "SecurityTxt_Canonical_CrossDomain":  ("Canonical",       True),
+            "SecurityTxt_Expired":                ("Expires",         True),
+        }
+
+        # Gather all child paths that were queued FROM security.txt comments
+        all_ep_urls  = [e.get("url","") for e in eps]
+        sec_txt_urls = [e.get("url","") for e in eps if "SecurityTxt" in " ".join(e.get("source", []))]
+
+        seen_content = set()
+        for sf in sec_findings:
+            stype   = sf.get("type", "")
+            content = sf.get("content", "")
+            if content in seen_content:
+                continue
+            seen_content.add(content)
+
+            label, flagged = _LABEL_MAP.get(stype, (stype, False))
+
+            if nc:
+                tag = "[LEAK]" if flagged else "[SecurityTxt]"
+                print(f"  {tag}  {label}: {content}")
+            else:
+                if flagged:
+                    print(f"  {C.R}●{C.RST} {C.BG_RED} {label.upper()} {C.RST}  {C.Y}{content}{C.RST}")
+                else:
+                    print(f"  {C.CY}●{C.RST} {C.CY}{label:<18}{C.RST}  {C.W}{content}{C.RST}")
+
+            # For comment leaks — show any paths that were queued FROM that comment
+            # (i.e. endpoints whose source is SecurityTxt_Comment and URL contains
+            # a path that appeared in the comment)
+            if stype == "SecurityTxt_Comment_Leak":
+                # Extract any paths from the comment itself
+                import re as _re
+                comment_paths = [
+                    m.group(1) for m in
+                    _re.finditer(r"""(?:^|\s)(/[^\s'"<>\\]+)""", content)
+                ]
+                for cp in comment_paths:
+                    # Find matching crawled endpoint
+                    matches = [u for u in all_ep_urls if cp in urlparse(u).path]
+                    matches.sort()
+                    INLINE = 3
+                    for mu in matches[:INLINE]:
+                        if nc:
+                            print(f"       └─ {mu}")
+                        else:
+                            print(f"  {C.GR}     └─{C.RST} {C.CYD}{mu}{C.RST}")
+                    overflow = len(matches) - INLINE
+                    if overflow > 0:
+                        if nc:
+                            print(f"       └─ [+{overflow} more — see JSON report]")
+                        else:
+                            print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — see JSON report]{C.RST}")
+
+        # Show any endpoints queued from security.txt that aren't already shown
+        other_sec = [u for u in sec_txt_urls if u not in seen_content]
+        if other_sec:
+            if nc:
+                print(f"  [SecurityTxt] Queued {len(other_sec)} endpoint(s) for crawl:")
+            else:
+                print(f"  {C.CY}●{C.RST} {C.CY}Queued endpoints{C.RST}  {C.GR}({len(other_sec)} URLs added to crawl){C.RST}")
+            for u in other_sec[:5]:
+                if nc:
+                    print(f"       └─ {u}")
+                else:
+                    print(f"  {C.GR}     └─{C.RST} {C.CYD}{u}{C.RST}")
+            overflow = len(other_sec) - 5
+            if overflow > 0:
+                if nc:
+                    print(f"       └─ [+{overflow} more — see JSON report]")
+                else:
+                    print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — see JSON report]{C.RST}")
 
     # ── robots disallowed ─────────────────────────────────────────────
     robots = intel.get("robots_disallowed", [])
@@ -783,6 +926,7 @@ class Config:
             ".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".tar.gz", ".rar",
             ".webp", ".mov", ".webm", ".exe", ".dmg", ".apk", ".bmp", ".tiff"
         ])
+        self.enable_noise_filter = kw.get("enable_noise_filter", True)
         self.enable_graphql     = kw.get("enable_graphql",     True)
         self.enable_openapi     = kw.get("enable_openapi",     True)
         self.enable_cors        = kw.get("enable_cors",        True)
@@ -944,6 +1088,38 @@ _AUTH_PATTERNS  = {
 _SQLI_PARAM_RE = re.compile(r'(?:id|select|report|update|query|search|from|where|order|by|group|limit|offset|slug|category|tag)$', re.I)
 _CMDI_PARAM_RE = re.compile(r'(?:cmd|command|exec|execute|path|file|dir|folder|target|host|url|endpoint|run|script|sh|bash|run)$', re.I)
 
+# ── Noise path filter ─────────────────────────────────────────────────
+# Path patterns that are NEVER real injectable app endpoints on any target.
+# Covers VCS repo browser UI (GitHub/GitLab/Gitea/Bitbucket), CI pages,
+# CDN artefact paths, and structural navigation links generated by JS.
+# Applied in is_valid() before the URL enters the queue.
+# Disable with --no-filter / -F to see everything raw.
+_NOISE_PATH_RE = re.compile(
+    r'/(?:'
+    r'blob/[^/]+/'          # /blob/master/file.py  — git file viewer
+    r'|tree/[^/]+/'         # /tree/master/src/     — git tree browser
+    r'|commits?/[^/]+/'     # /commits/main/        — commit history
+    r'|releases/tag/'       # /releases/tag/v1.0    — release tag pages
+    r'|graphs/'             # /graphs/contributors  — stats pages
+    r'|compare/'            # /compare/a...b        — diff viewer
+    r'|branches'            # /branches             — branch listing
+    r'|stargazers'          # /stargazers           — star listing
+    r'|watchers'            # /watchers             — watcher listing
+    r'|forks'               # /forks                — fork listing
+    r'|pulse'               # /pulse                — activity pulse
+    r'|actions'             # /actions              — CI/CD pages
+    r'|activity'            # /activity             — activity feed
+    r'|custom-properties'   # /custom-properties    — GitHub metadata
+    r')',
+    re.I
+)
+
+# ── socket.io URL detector ────────────────────────────────────────────
+# socket.io polling URLs embed ephemeral session tokens (sid=...) and
+# EIO transport params. They expire before any agent can act on them.
+# Intercepted in is_valid() and parked in store.socketio_endpoints.
+_SOCKETIO_RE = re.compile(r'/socket\.io/\??.*EIO=', re.I)
+
 def normalize(url: str) -> str:
     try:
         p  = urlparse(url)
@@ -988,6 +1164,10 @@ class Store:
         # Keyed by js_file_url → list of param names.
         # Downstream agents should treat these as "discovered but untargeted".
         self.js_orphan_params: Dict[str, List[str]] = {}
+        # socket.io endpoints — ephemeral transport URLs, NOT injectable targets.
+        # Stored so the terminal and JSON show WebSocket is active on the target.
+        self.socketio_endpoints: List[dict] = []
+        self._socketio_seen:     Set[str]   = set()
 
     def _key(self, url, method):
         return f"{method.upper()}:{cluster(normalize(url))}"
@@ -1019,6 +1199,13 @@ class Store:
             "screenshot":           None,
         }
 
+    # API/service path prefixes — boosted to HIGH confidence on any app.
+    # /api/, /rest/, /graphql/, /v1/, /internal/, etc. are real endpoints.
+    _API_PATH_RE = re.compile(
+        r'^/(?:api|rest|graphql|gql|v[0-9]+|internal|backend|service|rpc|data)[/]',
+        re.I
+    )
+
     def add_endpoint(self, url, method="GET", source="Static",
                      params=None, score=Conf.LOW, auth_required=False):
         key = self._key(url, method)
@@ -1027,6 +1214,14 @@ class Store:
         ep = self.endpoints[key]
         if source not in ep["source"]:
             ep["source"].append(source)
+        # Confidence boost: API/REST/GraphQL paths are high-value on any app.
+        # Applied universally — not tied to any specific target.
+        try:
+            _path = urlparse(url).path
+            if self._API_PATH_RE.match(_path) and score < Conf.HIGH:
+                score = Conf.HIGH
+        except Exception:
+            pass
         ep["confidence"]       = min(ep["confidence"] + score, Conf.CONFIRMED)
         ep["confidence_label"] = Conf.label(ep["confidence"])
         if auth_required:
@@ -1099,6 +1294,22 @@ class Store:
         for p in params:
             if p and p not in bucket:
                 bucket.append(p)
+
+    def add_socketio(self, url: str, method: str = "GET"):
+        """
+        Record a socket.io polling URL without adding it to the main endpoint
+        store. These URLs contain ephemeral session tokens (sid=...) and are
+        dead before any agent acts on them.
+        """
+        base = urlparse(url)._replace(query="", fragment="").geturl()
+        if base not in self._socketio_seen:
+            self._socketio_seen.add(base)
+            self.socketio_endpoints.append({
+                "base_url": base,
+                "example":  url,
+                "method":   method.upper(),
+                "note":     "socket.io transport — ephemeral session token, not injectable",
+            })
 
     # High-risk param names — any endpoint bearing these warrants extra scrutiny
     _RISK_PARAMS = frozenset({
@@ -1267,6 +1478,8 @@ class Store:
             # JS orphan params — params discovered in JS files with no resolved endpoint
             "js_orphan_param_files": len(self.js_orphan_params),
             "js_orphan_param_count": sum(len(v) for v in self.js_orphan_params.values()),
+            "websocket_detected":     len(self.socketio_endpoints) > 0,
+            "socketio_count":         len(self.socketio_endpoints),
         }
         
         # FIX 1 & 2: Format endpoints for export
@@ -1327,6 +1540,9 @@ class Store:
                 for js_url, params in self.js_orphan_params.items()
                 if params
             ],
+            # socket.io transport endpoints — ephemeral, not injectable.
+            # Presence confirms real-time WebSocket features on this target.
+            "socketio_endpoints": self.socketio_endpoints,
         }
 
         if fmt == "json":
@@ -2064,6 +2280,218 @@ class RobotsParser:
         if count:
             self.emit.always_info(f"[Sitemap] {sitemap_url} → {count} URLs queued")
 
+
+# ══════════════════════════════════════════════════════════════════════
+# SECURITY.TXT PARSER
+# RFC 9116 — https://www.rfc-editor.org/rfc/rfc9116
+# Mines every field AND every comment for paths, URLs, and sensitive
+# keywords — mirrors the same intelligence approach as robots.txt.
+# ══════════════════════════════════════════════════════════════════════
+
+class SecurityTxtParser:
+    """
+    Parses /.well-known/security.txt (and /security.txt fallback).
+
+    What it extracts:
+      Contact      → emails + URLs recorded as secrets; mailto: decoded
+      Encryption   → PGP key URL queued as endpoint (infra leak)
+      Acknowledgments / Policy / Hiring → URLs queued
+      Canonical    → cross-check against current target domain
+      Expires      → flag if expired (stale file = unmaintained target)
+      Comments (#) → same sensitive-keyword scan as robots.txt
+
+    All discovered paths (/...) are queued as crawl targets.
+    All structured findings are recorded via store.add_secret so they
+    appear in the SECURITY FINDINGS section of the terminal output and
+    in the JSON report under secrets[].
+    """
+
+    # Fields whose values are URLs or emails worth recording
+    _URL_FIELDS    = frozenset({"contact", "encryption", "acknowledgments",
+                                "policy", "hiring", "canonical", "csaf"})
+    # Fields that when leaked mean something sensitive about scope/infra
+    _SCOPE_FIELDS  = frozenset({"canonical", "preferred-languages"})
+
+    # Same pattern set as the robots.txt comment scanner
+    _COMMENT_PATTERNS = re.compile(
+        r'(?:password|passwd|secret|token|key|api[_-]?key|db|database|backup|'
+        r'sql|dump|cred|credential|auth|admin|prod|production|staging|internal|'
+        r'private|todo|fixme|note to self|remove|delete|temp|test|debug|'
+        r'panel|path|endpoint|route|url|host|server|mysql|mongo|redis|'
+        r'postgres|s3|bucket|aws|gcp|azure)',
+        re.I
+    )
+
+    # email pattern
+    _EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+
+    def __init__(self, base_url: str, store, queue, emit, is_valid_fn):
+        self.base_url  = base_url.rstrip("/")
+        self.store     = store
+        self.queue     = queue
+        self.emit      = emit
+        self.is_valid  = is_valid_fn
+        self._sec_url  = urljoin(self.base_url, "/.well-known/security.txt")
+        self._base_domain = urlparse(base_url).netloc.lower()
+
+    def parse(self, text: str):
+        """
+        Parse the full text content of a security.txt file.
+        Called from the well-known probe loop after a 200 response.
+        """
+        self.emit.always_info("[SecurityTxt] Parsing /.well-known/security.txt")
+
+        found_fields   = {}   # field_name → [values]
+        comment_leaks  = []
+        queued_urls    = 0
+        expired        = False
+
+        for raw_line in text.splitlines():
+            raw_line = raw_line.rstrip()
+
+            # ── comment line ──────────────────────────────────────────
+            if raw_line.lstrip().startswith("#"):
+                comment = raw_line.lstrip().lstrip("#").strip()
+                if not comment:
+                    continue
+                # Always emit every comment — internal notes live here
+                is_sensitive = bool(self._COMMENT_PATTERNS.search(comment))
+                self.emit.security_txt_field("Comment", comment, flagged=is_sensitive)
+                if is_sensitive:
+                    self.store.add_secret(comment, "SecurityTxt_Comment_Leak", self._sec_url)
+                    comment_leaks.append(comment)
+                # Fix 3: broad path regex — handles /path, /path?qs=1, /path/sub
+                # Stops only at whitespace and quote chars, not at ? or =
+                for _pm in re.finditer(r"""(?:^|\s)(/[^\s'"<>\\]+)""", comment):
+                    _path = _pm.group(1).strip().rstrip(".,;)")
+                    _full = urljoin(self.base_url, _path)
+                    if self.is_valid(_full):
+                        self.store.add_endpoint(_full, source="SecurityTxt_Comment", score=2)
+                        self.queue.put_nowait((_full, 1, "SecurityTxt_Comment"))
+                        queued_urls += 1
+                        self.emit.security_txt_field("Path (comment)", _path, flagged=True)
+                continue
+
+            # ── skip blank lines ──────────────────────────────────────
+            if not raw_line.strip():
+                continue
+
+            # ── field: value ──────────────────────────────────────────
+            # Fix 4: use split(":", 1) then re-join value — partition breaks
+            # on URLs like "Contact: https://example.com/page" because
+            # partition(":") stops at the first colon, dropping "//example.com/page"
+            if ":" not in raw_line:
+                continue
+            parts = raw_line.split(":", 1)
+            field = parts[0].strip().lower()
+            value = parts[1].strip() if len(parts) > 1 else ""
+            # Restore URL scheme if field value looks like it lost its "//"
+            # e.g. "https" alone means the split ate the colon from https://
+            if value in ("https", "http", "ftp") and raw_line.count(":") >= 2:
+                value = raw_line.split(":", 1)[1].strip()
+            if not field or not value:
+                continue
+
+            found_fields.setdefault(field, []).append(value)
+            flagged = False
+
+            # ── Contact ───────────────────────────────────────────────
+            if field == "contact":
+                if value.startswith("mailto:"):
+                    # Fix 1: mailto: → extract full email including + chars
+                    email = value[7:].strip()
+                    self.store.add_secret(email, "SecurityTxt_Contact_Email", self._sec_url)
+                    flagged = True
+                elif self._EMAIL_RE.match(value):
+                    self.store.add_secret(value, "SecurityTxt_Contact_Email", self._sec_url)
+                    flagged = True
+                elif value.startswith("http"):
+                    # Fix 1: Contact URL was never stored — now it is
+                    self._queue_url(value)
+                    queued_urls += 1
+                    self.store.add_secret(value, "SecurityTxt_Contact_URL", self._sec_url)
+                    flagged = True
+                self.emit.security_txt_field("Contact", value, flagged=flagged)
+
+            # ── Encryption ────────────────────────────────────────────
+            elif field == "encryption":
+                if value.startswith("http") or value.startswith("/"):
+                    self._queue_url(value)
+                    queued_urls += 1
+                # Fix 2: only flag HIGH if PGP key is on a DIFFERENT domain.
+                # Same-domain encryption key is expected and normal RFC 9116 usage.
+                enc_domain   = urlparse(value).netloc.lower() if value.startswith("http") else self._base_domain
+                cross_domain = bool(enc_domain and enc_domain != self._base_domain)
+                self.store.add_secret(value, "SecurityTxt_Encryption_Key", self._sec_url)
+                self.emit.security_txt_field("Encryption", value, flagged=cross_domain)
+
+            # ── Canonical ─────────────────────────────────────────────
+            elif field == "canonical":
+                canon_domain = urlparse(value).netloc.lower()
+                cross_domain = bool(canon_domain and canon_domain != self._base_domain)
+                if cross_domain:
+                    self.store.add_secret(value, "SecurityTxt_Canonical_CrossDomain", self._sec_url)
+                self.emit.security_txt_field("Canonical", value, flagged=cross_domain)
+
+            # ── Policy / Acknowledgments / Hiring / CSAF ─────────────
+            elif field in ("policy", "acknowledgments", "hiring", "csaf"):
+                if value.startswith("http") or value.startswith("/"):
+                    self._queue_url(value)
+                    queued_urls += 1
+                self.emit.security_txt_field(field.capitalize(), value)
+
+            # ── Expires ───────────────────────────────────────────────
+            elif field == "expires":
+                try:
+                    from datetime import timezone as _tz
+                    exp_dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    expired = exp_dt < datetime.now(_tz.utc)
+                    if expired:
+                        self.store.add_secret(value, "SecurityTxt_Expired", self._sec_url)
+                    self.emit.security_txt_field("Expires", value, flagged=expired)
+                except Exception:
+                    self.emit.security_txt_field("Expires", value)
+
+            # ── Preferred-Languages ───────────────────────────────────
+            elif field == "preferred-languages":
+                # Fix 5: was silently swallowed — now emitted cleanly
+                self.emit.security_txt_field("Preferred-Languages", value)
+
+            # ── everything else — emit and queue any paths found ──────
+            else:
+                # Fix 6: unknown fields are now always emitted so nothing
+                # disappears silently regardless of what the app puts in its file
+                self.emit.security_txt_field(field.capitalize(), value)
+                # Queue any path or URL values for crawling
+                if value.startswith("/"):
+                    self._queue_url(value)
+                    queued_urls += 1
+                elif value.startswith("http"):
+                    self._queue_url(value)
+                    queued_urls += 1
+
+        # ── summary ───────────────────────────────────────────────────
+        summary_parts = []
+        if comment_leaks:
+            summary_parts.append(f"{len(comment_leaks)} comment leak(s)")
+        if expired:
+            summary_parts.append("EXPIRED file")
+        if queued_urls:
+            summary_parts.append(f"{queued_urls} URL(s) queued")
+        summary = "  |  ".join(summary_parts) if summary_parts else "clean"
+        self.emit.always_info(f"[SecurityTxt] Result: {summary}")
+
+    def _queue_url(self, value: str):
+        """Queue a URL or path found in security.txt as a crawl target."""
+        if value.startswith("/"):
+            full = urljoin(self.base_url, value)
+        else:
+            full = value
+        # Always record it — even out-of-scope URLs are intelligence
+        self.store.add_endpoint(full, source="SecurityTxt", score=2)
+        if self.is_valid(full):
+            self.queue.put_nowait((full, 1, "SecurityTxt"))
+
 # ══════════════════════════════════════════════════════════════════════
 # SPA SCANNER
 # ══════════════════════════════════════════════════════════════════════
@@ -2266,7 +2694,7 @@ class SPAScanner:
                     except Exception:
                         pass
             except Exception as e:
-                self.emit.warn(f"[Worker] Error processing {url}: {e}")
+                self.emit.warn(f"[SPA-Interact] Phase 1 nav error ({sel}): {e}")
 
         # Phase 2: fill and submit visible forms
         try:
@@ -2516,6 +2944,14 @@ class Spider:
         if p.netloc != self.base_domain: return False
         low = url.lower()
         if any(low.endswith(ext) or f"{ext}?" in low for ext in self.cfg.extensions_to_ignore):
+            return False
+        # Intercept socket.io polling URLs — park in store, never queue
+        if _SOCKETIO_RE.search(url):
+            self.store.add_socketio(url)
+            return False
+        # Noise path filter — blocks VCS browser UI, CI pages, CDN artefact paths
+        # Works on any target. Disable with --no-filter / -F if you want raw output.
+        if self.cfg.enable_noise_filter and _NOISE_PATH_RE.search(p.path):
             return False
         return bool(p.scheme in ("http","https"))
 
@@ -2772,9 +3208,15 @@ class Spider:
             full = urljoin(url, m.group(1))
             if self.is_valid(full):
                 if self._discover_url(full, 1, "JS_DynImport", show_feed=True): ep_count += 1
-        for m in re.finditer(r'["\']\/(?:static|_next|assets)\/[a-zA-Z0-9._\-\/]+\.js["\']', text):
-            path = m.group(0).strip('"\'')
-            if self._discover_url(urljoin(url, path), 1, "JS_Chunk", show_feed=True): ep_count += 1
+        # Broad JS chunk pattern — discovers any /path/to/file.js string literal
+        # Works on any framework: React, Next.js, Vue, Angular, Django, Rails, etc.
+        for m in re.finditer(r"""["'](/[a-zA-Z0-9._\-/]+\.js)["']""", text):
+            chunk_path = m.group(1)
+            chunk_full = urljoin(url, chunk_path)
+            if self.is_valid(chunk_full):
+                if self._discover_url(chunk_full, 1, "JS_Chunk", show_feed=True): ep_count += 1
+
+
 
     async def _fetch_and_process(self, session, url, depth, source):
         self.visited.add(normalize(url))
@@ -2822,8 +3264,16 @@ class Spider:
                 self.emit.info(f'[Soft-404] Dropping non-existent route: {url}')
                 return
 
-            if depth <= 1:
+            # Run tech detection at shallow depth always; at deeper depths
+            # only when the response carries meaningful server fingerprint headers.
+            # This catches admin panels and API gateways that reveal stack info
+            # only on their own routes, not on the root page.
+            _srv = hdrs.get("Server","") or hdrs.get("server","")
+            _xpb = hdrs.get("X-Powered-By","") or hdrs.get("x-powered-by","")
+            _asp = hdrs.get("X-AspNet-Version","") or hdrs.get("x-aspnet-version","")
+            if depth <= 1 or _srv or _xpb or _asp:
                 self._detect_tech(hdrs, body, url)
+            if depth <= 1:
                 Extractor.csp_hints(hdrs, url, self.store, self.emit)
             
             if 'text/html' in ct:
@@ -2946,13 +3396,22 @@ class Spider:
                         self.emit.crawl_feed("Found", "GET", _wk_url)
                         if _wk.endswith("openid-configuration"):
                             await self._probe_oidc(session, self.target)
-                        for _m in re.finditer(r'(?:^|\s)((?:https?://[^\s]+|/[a-zA-Z0-9_\-/]+))', _t, re.M):
-                            _path = _m.group(1).strip()
-                            if _path.startswith("/"):
-                                _full = urljoin(self.target, _path)
-                                if self.is_valid(_full):
-                                    self.store.add_endpoint(_full, source="WellKnown", score=Conf.LOW)
-                                    self._queue_url(_full, 1, "WellKnown")
+                        # security.txt — dedicated structured parser (comment mining + field extraction)
+                        elif _wk.endswith("security.txt"):
+                            _sec_parser = SecurityTxtParser(
+                                self.target, self.store, self.queue,
+                                self.emit, self.is_valid
+                            )
+                            _sec_parser.parse(_t)
+                        else:
+                            # Generic URL extraction for other well-known files
+                            for _m in re.finditer(r'(?:^|\s)((?:https?://[^\s]+|/[a-zA-Z0-9_\-/]+))', _t, re.M):
+                                _path = _m.group(1).strip()
+                                if _path.startswith("/"):
+                                    _full = urljoin(self.target, _path)
+                                    if self.is_valid(_full):
+                                        self.store.add_endpoint(_full, source="WellKnown", score=Conf.LOW)
+                                        self._queue_url(_full, 1, "WellKnown")
                 spa_ctx = None
                 if self.cfg.enable_screenshots and not self.cfg.use_playwright:
                     self.emit.warn("[Screenshot] --screenshot requested but --no-playwright passed. Skipping.")
@@ -3210,50 +3669,52 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", nargs="?", help="Target URL  (e.g. https://example.com)")
 
     scan = p.add_argument_group(f"{C.CY}Scan Options{C.RST}")
-    scan.add_argument("--depth",   "-d",  type=int, default=4,  metavar="N",
+    scan.add_argument("--depth",       "-d", type=int, default=4,  metavar="N",
                       help="Max crawl depth  (default: 4)")
-    scan.add_argument("--concurrency",     type=int, default=12, metavar="N",
+    scan.add_argument("--concurrency", "-c", type=int, default=12, metavar="N",
                       help="Concurrent workers  (default: 12)")
-    scan.add_argument("--timeout",         type=int, default=15, metavar="S",
+    scan.add_argument("--timeout",     "-t", type=int, default=15, metavar="S",
                       help="Per-request timeout in seconds  (default: 15)")
-    scan.add_argument("--verbose", "-v",  action="store_true",
+    scan.add_argument("--verbose",     "-v", action="store_true",
                       help="Show all discovery logs")
 
     auth = p.add_argument_group(f"{C.CY}Authentication{C.RST}")
-    auth.add_argument("--cookie",  type=str, default=None, metavar="COOKIE",
+    auth.add_argument("--cookie",  "-C", type=str, default=None, metavar="COOKIE",
                       help="Cookie string, dict, or path to cookie file")
-    auth.add_argument("--auth",    type=str, default=None, metavar="HEADER",
+    auth.add_argument("--auth",    "-a", type=str, default=None, metavar="HEADER",
                       help='Authorization header  e.g. "Bearer eyJ..."')
 
     out = p.add_argument_group(f"{C.CY}Output{C.RST}")
-    out.add_argument("--out",      type=str, default=None, metavar="FILE",
+    out.add_argument("--out",    "-o", type=str, default=None, metavar="FILE",
                      help="Extra output file  (JSON always auto-saved)")
-    out.add_argument("--format",   type=str, default="json",
+    out.add_argument("--format", "-f", type=str, default="json",
                      choices=["json","jsonl","csv","burp"],
                      help="Extra output format  (default: json)")
 
     flags = p.add_argument_group(f"{C.CY}Feature Flags{C.RST}")
-    flags.add_argument("--no-playwright", action="store_true",
+    flags.add_argument("--no-playwright", "-P", action="store_true",
                        help="Disable headless browser SPA scanning")
-    flags.add_argument("--no-probing",    action="store_true",
+    flags.add_argument("--no-probing",    "-p", action="store_true",
                        help="Disable intelligent probing phase")
-    flags.add_argument("--spa-interact", action="store_true",
-                       help="Enable SPA form filling and button clicking (use only on authorized targets)")
-    flags.add_argument("--no-cors",       action="store_true",
+    flags.add_argument("--spa-interact",  "-I", action="store_true",
+                       help="Enable SPA form filling and button clicking (authorized targets only)")
+    flags.add_argument("--no-cors",       "-R", action="store_true",
                        help="Disable CORS misconfiguration checks")
-    flags.add_argument("--no-graphql",    action="store_true",
+    flags.add_argument("--no-graphql",    "-G", action="store_true",
                        help="Disable GraphQL introspection probe")
-    flags.add_argument("--no-openapi",    action="store_true",
+    flags.add_argument("--no-openapi",    "-O", action="store_true",
                        help="Disable OpenAPI / Swagger discovery")
-    flags.add_argument("--extract",      action="store_true",
+    flags.add_argument("--extract",       "-x", action="store_true",
                        help="Enable passive data extraction (emails, IPs, buckets)")
-    flags.add_argument("--screenshot", nargs="?", const="standard",
-                       help="Capture screenshots of key endpoints (default: standard). Optionally specify preset: all, blocked, errors, api, admin, or custom regex")
+    flags.add_argument("--screenshot",    "-s", nargs="?", const="standard",
+                       help="Screenshots of key endpoints. Preset: all, standard, blocked, errors, api, admin, or regex")
+    flags.add_argument("--no-filter",     "-F", action="store_true",
+                       help="Disable noise path filter (include VCS browser UI, CDN paths, socket.io in output)")
 
     util = p.add_argument_group(f"{C.CY}Utilities{C.RST}")
-    util.add_argument("--diff",    type=str, default=None, metavar="OLD_REPORT",
+    util.add_argument("--diff",    "-D", type=str, default=None, metavar="OLD_REPORT",
                       help="Diff this scan against an old JSON report")
-    util.add_argument("--upgrade", action="store_true",
+    util.add_argument("--upgrade",       action="store_true",
                       help="Upgrade Hellhound-Spider to the latest version")
 
     return p
@@ -3328,8 +3789,9 @@ def main():
         enable_probing  = not args.no_probing,
         enable_cors     = not args.no_cors,
         enable_graphql  = not args.no_graphql,
-        enable_openapi  = not args.no_openapi,
-        enable_extraction = args.extract,
+        enable_openapi      = not args.no_openapi,
+        enable_noise_filter = not args.no_filter,
+        enable_extraction   = args.extract,
         enable_screenshots = args.screenshot is not None,
         screenshot_priority = args.screenshot if args.screenshot else "standard",
         output_format   = args.format,
