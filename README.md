@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-12.4-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.0-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -53,9 +53,13 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v12.4 — Autonomous Assistant Update
+## v13.0 — Surgical Intelligence Release
 
-v12.4 makes the Spider a fully autonomous recon assistant. You give it a URL — it does the rest, makes smart decisions, and produces output that humans can read and agents can consume directly.
+v13.0 establishes the Spider as a high-fidelity surgical recon engine. This major release focuses on hardened discovery accuracy, advanced bot-bypass mechanisms, and optimized telemetry for downstream agents.
+
+**Enhanced Accuracy** — Deep heuristic analysis now ensures near-zero false positives on complex, dynamic SPAs. The extraction engine has been hardened to handle erratic DOM structures and obfuscated JS routes with surgical precision.
+
+**Hardening** — Integrated bot-bypass logic, cookie-sync stabilization, and source-map resolution fixes ensure reliable discovery even on hardened enterprise targets.
 
 **Noise Filter** — Repository browser paths (`/blob/`, `/tree/`, `/commits/`, etc.), CDN artefacts, and structural UI links are now detected and suppressed before they ever enter the endpoint store. The real API surface is no longer buried in 80+ GitHub viewer fake-endpoints.
 

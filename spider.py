@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-  HELLHOUND SPIDER  v12.4  —  Standalone Recon Engine
+  HELLHOUND SPIDER  v13.0  —  Standalone Recon Engine
 
   Full SPA + Non-SPA Crawler | robots.txt | sitemap.xml | JS Analysis
 
@@ -48,7 +48,7 @@ except Exception as e:
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "12.4"
+VERSION      = "13.0"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
