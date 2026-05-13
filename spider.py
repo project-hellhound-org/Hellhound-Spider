@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-  HELLHOUND SPIDER  v13.0  —  Standalone Recon Engine
+  HELLHOUND SPIDER  v12.4  —  Standalone Recon Engine
 
   Full SPA + Non-SPA Crawler | robots.txt | sitemap.xml | JS Analysis
 
@@ -48,7 +48,7 @@ except Exception as e:
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "13.0"
+VERSION      = "12.4"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -1613,13 +1613,22 @@ class Extractor:
         (r'(AIza[0-9A-Za-z\-_]{35})',                                     "Google_API_Key"),
         (r'(AKIA[0-9A-Z]{16})',                                            "AWS_Access_Key"),
         (r'Bearer\s+([a-zA-Z0-9\-._~+/]{20,}=*)',                         "Bearer_Token"),
-        (r'["\']sk-[a-zA-Z0-9]{20,}["\']',                                "Stripe_Key"),
+        (r'["\']sk-[a-zA-Z0-9]{20,}["\']',                               "Stripe_Key"),
         (r'gh[pousr]_[A-Za-z0-9_]{36,}',                                  "GitHub_PAT"),
         (r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----',                      "Private_Key_PEM"),
         (r'["\'](?:password|passwd|secret|api_?key|token)\s*["\']?\s*[:=]\s*["\']([^"\']{6,})["\']',
                                                                            "Hardcoded_Credential"),
+        # ── Real-world tokens missing from original ───────────────────
+        (r'xox[bpsa]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,}',        "Slack_Token"),
+        (r'\bAC[a-z0-9]{32}\b',                                           "Twilio_AccountSID"),
+        (r'\bSK[a-z0-9]{32}\b',                                           "Twilio_AuthToken"),
+        (r'SG\.[a-zA-Z0-9\-_]{22,}',                                      "SendGrid_Key"),
+        (r'pk\.eyJ1[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+',                   "Mapbox_Token"),
+        (r'https://[a-z0-9\-]+\.firebaseio\.com',                        "Firebase_URL"),
+        (r'[a-zA-Z0-9\-_]+\.firebaseapp\.com',                           "Firebase_App"),
+        (r'eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]+',
+                                                                           "JWT_Token"),
     ]
-
     _EXTRACTION_PATTERNS = [
         (re.compile(
             r'(?<![a-zA-Z0-9])([a-zA-Z0-9._%+-]{2,}@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})(?![a-zA-Z0-9])',
@@ -1637,19 +1646,45 @@ class Extractor:
             re.I), "Phone"),
         (re.compile(
             r'(s3://|gs://)[a-z0-9][a-z0-9\-\.]+|'
-            r'[a-z0-9\-]+\.s3\.amazonaws\.com|'
-            r'[a-z0-9\-]+\.blob\.core\.windows\.net',
+            r'[a-z0-9\-]+\.s3(?:\.[a-z0-9\-]+)?\.amazonaws\.com|'
+            r'storage\.googleapis\.com/[a-z0-9\-]+|'
+            r'[a-z0-9\-]+\.storage\.googleapis\.com|'
+            r'[a-z0-9\-]+\.blob\.core\.windows\.net|'
+            r'[a-z0-9\-]+\.table\.core\.windows\.net|'
+            r'[a-z0-9\-]+\.azuredatalakestore\.net',
             re.I), "Cloud_Bucket"),
         (re.compile(
             r'(SQLSTATE|ORA-\d{5}|mysql_fetch|pg_query|'
             r'MongoError|SequelizeError|mysqli_error)',
             re.I), "DB_Error"),
         (re.compile(
-            r'(?<![.a-zA-Z0-9_])'          # not a property chain (no this.internal, obj.corp)
-            r'(?!localhost\b)(?!127\.)'   # exclude localhost
-            r'[a-zA-Z0-9][a-zA-Z0-9\-]{3,}'  # hostname min 4 chars
+            r'(?:lat(?:itude)?|lng|lon(?:gitude)?)\s*[:="\']+\s*'
+            r'(-?(?:90|[0-8]?\d)(?:\.\d{3,8})?)'
+            r'(?:[^\d.-].*?)?'
+            r'(?:lat(?:itude)?|lng|lon(?:gitude)?)\s*[:="\']+\s*'
+            r'(-?(?:180|1[0-7]\d|[0-9]?\d)(?:\.\d{3,8})?)',
+            re.I | re.S), "Geo_Leak"),
+        (re.compile(
+            # Tier 1: definitive internal TLDs — match freely
+            r'(?<![.a-zA-Z0-9_])'
+            r'(?!localhost\b)(?!127\.)'
+            r'[a-zA-Z0-9][a-zA-Z0-9\-]{3,}'
             r'\.(internal|intranet|corp|lan|private)\b',
             re.I), "Internal_Host"),
+        # Tier 2a: ambiguous TLDs, hostname has hyphen or digit — case insensitive ok
+        (re.compile(
+            r'(?<![.a-zA-Z0-9_])(?!localhost\b)(?!127\.)'
+            r'[a-zA-Z0-9]*[\-\d][a-zA-Z0-9\-]*'
+            r'\.(local|dev|test|prod|staging|uat|int|stg)\b',
+            re.I), "Internal_Host"),
+        # Tier 2b: ambiguous TLDs, multi-segment — MUST be all-lowercase.
+        # G.CHILD.test / s.rnamespace.test have uppercase → not real hostnames.
+        # No re.I flag here — [a-z] is case-sensitive by design.
+        (re.compile(
+            r'(?<![.a-zA-Z0-9_])(?!localhost)(?!127\.)'
+            r'[a-z][a-z0-9\-]+\.[a-z][a-z0-9\-]+'
+            r'\.(local|dev|test|prod|staging|uat|int|stg)\b'),
+            "Internal_Host"),
     ]
     # Placeholder values that appear in docs/templates — not real secrets
     _SECRET_PLACEHOLDERS = frozenset({
@@ -1849,20 +1884,49 @@ class Extractor:
                 
                 # FIX 5: Email post-match filter
                 if dtype == "Email":
-                    local_part = val.split("@")[0]
-                    domain_part = val.split("@")[1] if "@" in val else ""
+                    local_part  = val.split("@")[0]
+                    domain_part = val.split("@")[1].lower() if "@" in val else ""
                     if ".." in val: continue
                     if len(local_part) < 2: continue
                     if "." not in domain_part: continue
                     if val.lower().endswith((".css", ".js", ".png", ".jpg", ".svg", ".woff")):
                         continue
+                    # Block known placeholder / documentation domains that are never real
+                    _PLACEHOLDER_EMAIL_DOMAINS = {
+                        "example.com", "example.org", "example.net",
+                        "test.com", "test.org", "test.net",
+                        "foo.com", "bar.com", "baz.com",
+                        "domain.com", "email.com", "mail.com",
+                        "user.com", "yoursite.com", "yourwebsite.com",
+                        "company.com", "website.com", "sample.com",
+                        "placeholder.com", "demo.com", "fake.com",
+                        "noreply.com", "no-reply.com",
+                        "sentry.io",    # Sentry DSN fragments leak as emails
+                    }
+                    if domain_part in _PLACEHOLDER_EMAIL_DOMAINS: continue
+                    # Block local-part placeholder names
+                    _PLACEHOLDER_LOCAL = {
+                        "jane", "john", "user", "admin", "test", "foo",
+                        "bar", "email", "name", "you", "me", "info",
+                        "hello", "contact", "mail", "noreply", "no-reply",
+                        "support", "help", "demo", "sample", "example",
+                        "someone", "anyone", "nobody", "webmaster",
+                    }
+                    if local_part.lower() in _PLACEHOLDER_LOCAL and domain_part in {
+                        "example.com","example.org","test.com","foo.com",
+                        "bar.com","domain.com","email.com","mail.com",
+                        "company.com","website.com",
+                    }: continue
 
                 if dtype == "Phone":
-                    val = re.sub(r'[\s.\-\(\)\/]', '', val)
-                    if not (7 <= len(val) <= 15): continue
-                    if not re.match(r'\+?\d+$', val): continue
-                    # Reject date-like patterns: YYYYMMDD, YYYYDDMM, DDMMYYYY etc
-                    if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', val): continue
+                    # Validate on stripped form but KEEP original for storage.
+                    # Stripping before store loses country code formatting like
+                    # +44 (0)20 7946 0958 or +91 98765-43210 — unacceptable.
+                    _stripped = re.sub(r'[\s.\-\(\)\/]', '', val)
+                    if not (7 <= len(_stripped) <= 15): continue
+                    if not re.match(r'\+?\d+$', _stripped): continue
+                    if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', _stripped): continue
+                    # val stays as-is — original formatting preserved
 
                 if dtype == "Internal_Host":
                     hostname = val.split('.')[0].lower()
@@ -1899,11 +1963,11 @@ class Extractor:
                             v = m.group(1) if m.lastindex else m.group(0)
                             if v:
                                 if dtype == "Phone":
-                                    v = re.sub(r'[\s.\-\(\)\/]', '', v)
-                                    if not (7 <= len(v) <= 15): continue
-                                    if not re.match(r'\+?\d+$', v): continue
-                                    # Reject date-like patterns
-                                    if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', v): continue
+                                    _sv = re.sub(r'[\s.\-\(\)\/]', '', v)
+                                    if not (7 <= len(_sv) <= 15): continue
+                                    if not re.match(r'\+?\d+$', _sv): continue
+                                    if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', _sv): continue
+                                    # v stays as-is — original formatting preserved
                                 if store.add_extracted_data(dtype, v.strip(), url):
                                     counts[dtype] += 1
             except Exception:
@@ -2398,15 +2462,16 @@ class SecurityTxtParser:
             # ── Contact ───────────────────────────────────────────────
             if field == "contact":
                 if value.startswith("mailto:"):
-                    # Fix 1: mailto: → extract full email including + chars
                     email = value[7:].strip()
                     self.store.add_secret(email, "SecurityTxt_Contact_Email", self._sec_url)
+                    # Also feed into extracted_data so it shows in EXTRACTED DATA section
+                    self.store.add_extracted_data("Email", email, self._sec_url)
                     flagged = True
                 elif self._EMAIL_RE.match(value):
                     self.store.add_secret(value, "SecurityTxt_Contact_Email", self._sec_url)
+                    self.store.add_extracted_data("Email", value, self._sec_url)
                     flagged = True
                 elif value.startswith("http"):
-                    # Fix 1: Contact URL was never stored — now it is
                     self._queue_url(value)
                     queued_urls += 1
                     self.store.add_secret(value, "SecurityTxt_Contact_URL", self._sec_url)
@@ -2773,91 +2838,137 @@ class SPAScanner:
             pass
 
     async def capture_screenshots(self, endpoints, spa_ctx):
+        """
+        Capture screenshots of matched endpoints.
+
+        Fixes vs original:
+        - Fresh page per screenshot — one hung nav can't cascade to all others
+        - wait_until="networkidle" + 800ms delay — SPAs have time to hydrate,
+          no more blank <div id="root"> captures on React/Vue/Angular apps
+        - full_page=True — captures below-the-fold content (admin dashboards, etc.)
+        - Auth context carried — context already has cookies/headers from crawl;
+          each new page inherits them automatically (Playwright context-level auth)
+        - Metadata index file written — screenshots/domain/preset/index.json
+          maps every filename to its source URL, status, and match reason
+        """
         if not spa_ctx: return
-        browser, context, page = spa_ctx
-        
-        domain = re.sub(r'[^a-zA-Z0-9_\-]', '_', urlparse(self.target_url).netloc)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        browser, context, _page = spa_ctx
+
+        domain   = re.sub(r'[^a-zA-Z0-9_\-]', '_', urlparse(self.target_url).netloc)
+        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
         priority = self.screenshot_cfg.get("priority", "standard")
+
         def get_status(e):
             obs = e.get("observed_status") or []
             if 200 in obs: return 200
             return max(obs) if obs else 0
-        
-        # Preset logic
-        rules = []
+
+        # ── Preset rules ─────────────────────────────────────────────────
         if priority == "all":
-            rules = [lambda ep: get_status(ep) in (200, 401, 403, 404)]
+            rule = lambda ep: get_status(ep) in (200, 401, 403, 404)
         elif priority == "standard":
-            rules = [lambda ep: get_status(ep) == 200 or re.search(r'login|admin|dashboard|upload|graphql|swagger|panel|console', ep["url"], re.I)]
+            rule = lambda ep: (get_status(ep) == 200 or
+                               re.search(r'login|admin|dashboard|upload|graphql|swagger|panel|console', ep["url"], re.I))
         elif priority == "blocked":
-            rules = [lambda ep: get_status(ep) in (401, 403)]
+            rule = lambda ep: get_status(ep) in (401, 403)
         elif priority == "errors":
-            rules = [lambda ep: get_status(ep) >= 400]
+            rule = lambda ep: get_status(ep) >= 400
         elif priority == "api":
-            rules = [lambda ep: get_status(ep) != 404 and re.search(r'/api/|/graphql|/swagger|/openapi', ep["url"], re.I)]
+            rule = lambda ep: (get_status(ep) != 404 and
+                               re.search(r'/api/|/graphql|/swagger|/openapi|/rest/', ep["url"], re.I))
         elif priority == "admin":
-            rules = [lambda ep: get_status(ep) != 404 and re.search(r'admin|panel|console|manage|backend', ep["url"], re.I)]
+            rule = lambda ep: (get_status(ep) != 404 and
+                               re.search(r'admin|panel|console|manage|backend|dashboard', ep["url"], re.I))
+        elif "," in priority:
+            _kws = [k.strip().lower() for k in priority.split(",")]
+            rule = lambda ep: get_status(ep) != 404 and any(k in ep["url"].lower() for k in _kws)
         else:
-            # Custom keywords or regex
-            if "," in priority:
-                keywords = [k.strip() for k in priority.split(",")]
-                rules = [lambda ep: get_status(ep) != 404 and any(k.lower() in ep["url"].lower() for k in keywords)]
-            else:
-                rules = [lambda ep: get_status(ep) != 404 and re.search(priority, ep["url"], re.I)]
+            rule = lambda ep: get_status(ep) != 404 and bool(re.search(priority, ep["url"], re.I))
 
         base_dir = Path("screenshots") / domain / priority
         base_dir.mkdir(parents=True, exist_ok=True)
-        
-        count = 0
-        seen_urls = set()
-        
-        for ep in endpoints.values():
-            url = ep["url"]
-            norm_url = url.split("?")[0].split("#")[0].rstrip("/")
-            if norm_url in seen_urls: continue
-            
-            matched = False
-            reason = ""
-            if priority in ("all", "standard", "blocked", "errors", "api", "admin"):
-                if any(r(ep) for r in rules):
-                    matched = True
-                    reason = f"preset: {priority}"
-            else:
-                if any(r(ep) for r in rules):
-                    matched = True
-                    reason = f"custom match: {priority}"
-            
-            if matched:
-                seen_urls.add(norm_url)
-                sanitized_path = re.sub(r'[^a-zA-Z0-9_\-]', '_', urlparse(url).path.strip("/"))
-                if not sanitized_path: sanitized_path = "root"
-                sanitized_path = sanitized_path[:80]
-                filename = f"{ts}_{sanitized_path}.jpg"
-                filepath = base_dir / filename
-                
-                label = ""
-                if get_status(ep) in (401, 403):
-                    label = " [AUTH WALL]"
 
+        count      = 0
+        failed     = 0
+        seen_urls  = set()
+        index      = []    # metadata index: [{filename, url, status, reason}, ...]
+
+        for ep in endpoints.values():
+            url      = ep["url"]
+            norm_url = url.split("?")[0].split("#")[0].rstrip("/")
+            if norm_url in seen_urls or not rule(ep):
+                continue
+            seen_urls.add(norm_url)
+
+            status = get_status(ep)
+            label  = " [AUTH WALL]" if status in (401, 403) else ""
+            reason = f"preset:{priority}{label}"
+
+            sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '_', urlparse(url).path.strip("/")) or "root"
+            filename  = f"{ts}_{sanitized[:75]}.jpg"
+            filepath  = base_dir / filename
+
+            # Fresh page per screenshot — prevents cascade failures
+            page = await context.new_page()
+            try:
+                self.emit.info(f"[Screenshot] {url} → {filepath}{label}")
+
+                # networkidle catches SPAs — domcontentloaded returns blank on React/Vue/Angular
                 try:
-                    self.emit.info(f"[Screenshot] {url} → {filepath}{label}")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                    await page.screenshot(path=str(filepath), type="jpeg", quality=75)
-                    ep["screenshot"] = {
-                        "path": str(filepath),
-                        "preset": priority,
-                        "reason": reason + label
-                    }
-                    count += 1
-                except Exception as e:
-                    self.emit.warn(f"[Screenshot] Failed {url}: {e}")
-        
-        if count:
-            self.emit.always_success(f"[Screenshot] Captured {count} screenshots to {base_dir}")
+                    await page.goto(url, wait_until="networkidle", timeout=15000)
+                except Exception:
+                    # networkidle timeout on heavy pages — fall back gracefully
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=8000)
+                        await asyncio.sleep(1.2)   # give JS framework time to hydrate
+                    except Exception:
+                        pass
+
+                # Extra settle time for SPA hydration even after networkidle
+                await asyncio.sleep(0.8)
+
+                # full_page=True captures below-the-fold content
+                await page.screenshot(
+                    path=str(filepath), type="jpeg", quality=75, full_page=True
+                )
+
+                ep["screenshot"] = {"path": str(filepath), "preset": priority, "reason": reason}
+                index.append({
+                    "filename": filename,
+                    "url":      url,
+                    "status":   status,
+                    "reason":   reason,
+                    "path":     str(filepath),
+                })
+                count += 1
+
+            except Exception as e:
+                self.emit.warn(f"[Screenshot] Failed {url}: {e}")
+                failed += 1
+            finally:
+                # Always close the page — even on failure
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+        # Write metadata index so user knows which file is which
+        if index:
+            index_path = base_dir / "index.json"
+            try:
+                import json as _j
+                index_path.write_text(_j.dumps({"preset": priority, "target": self.target_url,
+                                                 "captured_at": ts, "screenshots": index},
+                                                indent=2))
+                self.emit.always_success(
+                    f"[Screenshot] {count} captured → {base_dir}  "
+                    f"({failed} failed)  index: {index_path}"
+                )
+            except Exception:
+                self.emit.always_success(f"[Screenshot] {count} captured → {base_dir}  ({failed} failed)")
         else:
             self.emit.warn(f"[Screenshot] No endpoints matched the '{priority}' preset (0 captures)")
-        
+
         await browser.close()
         await self._pw.stop()
 
@@ -3151,6 +3262,15 @@ class Spider:
                                 "value":  "",
                             })
             if inputs: self.emit.info("[Form] %s %s <- [%s]" % (method, full, ", ".join(inputs)))
+            # Guard: skip non-HTTP form actions and fragment-only actions.
+            # javascript:void(0), mailto:, #, #section — all JS-handled, not real endpoints.
+            _full_parsed = urlparse(full)
+            if _full_parsed.scheme not in ("http", "https"):
+                continue
+            # Fragment-only: action="#" resolves to current page + fragment — not a new endpoint
+            _raw_action = (form.get("action") or "").strip()
+            if _raw_action.startswith("#") or _raw_action == "":
+                continue
             # Fix C: register exact URL, write params directly to form bucket
             self.store.add_endpoint(full, method=method, source="Form", score=Conf.HIGH)
             self.store.add_query_params(full)
