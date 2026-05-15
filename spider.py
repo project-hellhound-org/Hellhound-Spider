@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-  HELLHOUND SPIDER  v12.4  —  Standalone Recon Engine
+  HELLHOUND SPIDER  v12.5  —  Standalone Recon Engine
 
   Full SPA + Non-SPA Crawler | robots.txt | sitemap.xml | JS Analysis
 
@@ -48,7 +48,7 @@ except Exception as e:
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "12.4"
+VERSION      = "12.5"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -443,15 +443,33 @@ class Emit:
             "DELETE": C.R,   "WS":    C.MG,
         }.get(method, C.GL)
 
+        # 404_NOT_FOUND gets special colouring — grey strikethrough style
+        is_404 = conf == "404_NOT_FOUND"
         cc = {
-            "CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR,
+            "CONFIRMED":    C.G,
+            "HIGH":         C.Y,
+            "MEDIUM":       C.CYD,
+            "LOW":          C.GR,
+            "404_NOT_FOUND": C.GR,
         }.get(conf, C.GR)
+
+        # Show observed status inline if it adds information
+        obs     = ep.get("observed_status", [])
+        status_hint = ""
+        if is_404:
+            status_hint = f" [404]"
+        elif obs and obs != [200]:
+            # Show non-200 statuses so user knows something unusual was observed
+            status_hint = f" [{','.join(str(s) for s in obs[:3])}]"
+
+        conf_display = "NOT FOUND" if is_404 else conf
 
         # No OSC 8 wrapping: prevents dotted underlines in some terminals
         if self._nc:
-            print(f"    {method:<7}  {conf:<10}  {_strip(auth)}{_strip(sens)}{_strip(snap)}  {url}")
+            print(f"    {method:<7}  {conf_display:<12}  {_strip(auth)}{_strip(sens)}{_strip(snap)}  {url}{status_hint}")
         else:
-            print(f"  {mc}{method:<7}{C.RST} {cc}{conf:<10}{C.RST} {auth}{sens}{snap} {C.W}{url}{C.RST}")
+            url_col = C.GR if is_404 else C.W
+            print(f"  {mc}{method:<7}{C.RST} {cc}{conf_display:<12}{C.RST} {auth}{sens}{snap} {url_col}{url}{C.RST}{C.GR}{status_hint}{C.RST}")
 
     def print_always(self, msg: str):
         self._w(msg)
@@ -637,7 +655,13 @@ def print_results(intel: dict, target: str, elapsed: float,
             emit.row("...", f"{overflow} more — see JSON report", icon="○")
 
         # ── param map for interesting endpoints ──────────────────────
-        interesting = [e for e in real_eps if (e.get("params") or e.get("parameter_sensitive"))][:40]
+        # Exclude 404_NOT_FOUND endpoints from param map — not injectable
+        interesting = [
+            e for e in real_eps
+            if (e.get("params") or e.get("parameter_sensitive"))
+            and e.get("confidence") != "404_NOT_FOUND"
+            and 404 not in (e.get("observed_status") or [])
+        ][:40]
 
         if interesting:
             emit.section(f"PARAMETER MAP  ({len(interesting)} endpoints)", orbital=True)
@@ -1405,16 +1429,41 @@ class Store:
         ep["confidence_label"] = Conf.label(ep["confidence"])
 
     def record_status(self, url, method, status):
-        key = self._key(url, method)
-        if key in self.endpoints:
+        # Apply status to the specific method key AND cross-propagate to other
+        # methods on the same URL. The form parser registers POST at HIGH before
+        # the crawler ever fetches the URL as GET. When GET returns 404, both
+        # the GET and POST entries must be downgraded — the URL doesn't exist.
+        affected_keys = [self._key(url, method)]
+        # Cross-propagate 404 to all other method variants of the same URL
+        if status == 404:
+            norm = cluster(normalize(url))
+            for k, ep in self.endpoints.items():
+                if ep.get("cluster") == norm and k not in affected_keys:
+                    affected_keys.append(k)
+
+        for key in affected_keys:
+            if key not in self.endpoints:
+                continue
             ep = self.endpoints[key]
             if status not in ep["observed_status"]:
                 ep["observed_status"].append(status)
             if status in (401, 403):
                 ep["auth_required"] = True
             elif status == 200:
-                # If we saw a 200, it's not strictly 'walled' for this session
+                # Confirmed reachable — boost confidence if it was speculative
                 ep["auth_required"] = False
+                if ep["confidence"] < Conf.MEDIUM:
+                    ep["confidence"]       = Conf.MEDIUM
+                    ep["confidence_label"] = Conf.label(ep["confidence"])
+            elif status == 404:
+                # Real 404 — URL does not exist. Demote ALL method variants.
+                ep["confidence"]       = min(ep["confidence"], Conf.LOW)
+                ep["confidence_label"] = "404_NOT_FOUND"
+            elif status in (301, 302, 307, 308):
+                # Redirect — still exists, minor boost
+                if ep["confidence"] < Conf.MEDIUM:
+                    ep["confidence"]       = Conf.MEDIUM
+                    ep["confidence_label"] = Conf.label(ep["confidence"])
 
     def mark_sensitive(self, url, method):
         key = self._key(url, method)
@@ -1493,11 +1542,14 @@ class Store:
             
             # Confidence label mapping
             c = e["confidence"]
-            if c >= 10: cl = "CONFIRMED"
-            elif c >= 7: cl = "HIGH"
-            elif c >= 3: cl = "MEDIUM"
-            elif c >= 1: cl = "LOW"
-            else: cl = "UNKNOWN"
+            cl = e.get("confidence_label", "LOW")
+            # If record_status marked it 404_NOT_FOUND, preserve that label
+            if cl not in ("404_NOT_FOUND",):
+                if c >= 10: cl = "CONFIRMED"
+                elif c >= 7: cl = "HIGH"
+                elif c >= 3: cl = "MEDIUM"
+                elif c >= 1: cl = "LOW"
+                else: cl = "UNKNOWN"
 
             formatted_eps.append({
                 "url": e["url"],
@@ -1756,20 +1808,67 @@ class Extractor:
 
     @classmethod
     def is_bot_blocked(cls, body: str) -> bool:
-        """Heuristic check for common bot-protection/WAF challenge pages."""
+        """
+        Heuristic check for real bot-protection / WAF challenge pages.
+
+        Rules to avoid false positives on legitimate pages:
+
+        1. PHRASE-LEVEL indicators only — no single generic words.
+           "security check" fires on login pages. "checking your browser
+           before you proceed" only fires on Cloudflare challenge pages.
+
+        2. Content structure check — real app pages have <form> inputs,
+           <nav>, <main> content etc. Challenge pages are bare skeletons.
+           If the page has real interactive elements it is NOT a bot gate.
+
+        3. Size gate — WAF challenge pages are tiny (< 12000 bytes).
+           But size alone is not enough — small login pages also exist.
+        """
         if not body:
             return False
         body_lo = body.lower()
-        # Look for challenge/WAF indicators
-        indicators = (
-            "cloudflare", "ddos protection", "checking your browser",
-            "access denied", "security check", "captcha", "verification required",
-            "one more step", "sucuri", "incapsula", "akamai", "perimeterx",
+
+        # ── Tier 1: Highly specific WAF/bot-protection phrases ────────
+        # These are unique to challenge pages and won't appear in real app UI.
+        specific_indicators = (
+            "checking your browser before you proceed",
+            "checking your browser",       # Cloudflare classic
+            "enable javascript and cookies to continue",
+            "ddos protection by cloudflare",
+            "ray id:",                      # Cloudflare Ray ID footer
+            "please stand by, while we are checking your",
+            "your ip address has been blocked",
+            "this process is automatic",    # Cloudflare JS challenge
+            "browser will redirect to your requested content shortly",
+            "perimeterx",
+            "px-captcha",
+            "incapsula incident id",
+            "powered by sucuri",
+            "_sucuri_",
+            "akamai reference",
         )
-        if any(ind in body_lo for ind in indicators):
-            # Only count as blocked if it's a small "gate" page
-            if len(body) < 15000:
-                return True
+        if any(ind in body_lo for ind in specific_indicators):
+            return True
+
+        # ── Tier 2: Weaker signals only valid on skeleton pages ───────
+        # Words like "captcha", "access denied" appear in real apps too.
+        # Only fire if page is tiny AND has no real interactive structure.
+        weak_indicators = (
+            "captcha",
+            "are you human",
+            "bot protection",
+            "blocked by",
+        )
+        if any(ind in body_lo for ind in weak_indicators):
+            if len(body) < 8000:
+                # Check for real app structure — if present, NOT a bot gate
+                has_real_structure = any(sig in body_lo for sig in (
+                    "<nav", "<main", "<header", "<footer",
+                    "<input ", "<form ", "<table",
+                    "navbar", "sidebar", "menu",
+                ))
+                if not has_real_structure:
+                    return True
         return False
 
     @classmethod
@@ -3219,31 +3318,76 @@ class Spider:
             inputs = []
             form_fields_detail = []  # rich metadata for downstream agents
             for el in form.find_all(["input","select","textarea","button","datalist"]):
-                nm = el.get("name","").strip()
                 el_type = el.get("type","text").lower()
                 is_hidden = el_type == "hidden"
                 is_file   = el_type == "file"
+
+                # ── Field name resolution — priority order ─────────────
+                # 1. name attr (standard HTML, best)
+                # 2. id attr (common in modern JS-driven forms)
+                # 3. placeholder normalised (last resort — gives semantic hint)
+                # 4. aria-label normalised
+                # This catches forms like WebDriverUniversity Login Portal
+                # that use id="inputUsername" instead of name="username"
+                nm = el.get("name","").strip()
+                _source = "name"
+                if not nm:
+                    _id = el.get("id","").strip()
+                    if _id and el_type not in ("submit","button","reset","image"):
+                        # Strip common prefixes like "input", "field", "txt", "txt_"
+                        _stripped_id = re.sub(r'^(?:input|field|txt|frm|form)[-_]?', '', _id, flags=re.I).strip() or _id
+                        # Reject if the stripped id is just an HTML type name (id="text", id="password")
+                        # or a single character — those are meaningless as param names
+                        _HTML_TYPE_WORDS = {"text","password","email","number","tel","url",
+                                            "search","date","time","checkbox","radio","file",
+                                            "hidden","submit","button","reset","image"}
+                        # Reject if stripped id is just an HTML input type word OR too short
+                        # Case-insensitive: "Password" from "inputPassword" → rejected,
+                        # falls through to placeholder which gives "password" (same result but explicit)
+                        if _stripped_id.lower() not in _HTML_TYPE_WORDS and len(_stripped_id) > 2:
+                            nm = _stripped_id
+                            _source = "id"
+                if not nm:
+                    _ph = el.get("placeholder","").strip()
+                    if _ph and el_type not in ("submit","button","reset","image","hidden"):
+                        # Normalise placeholder to a valid param name: lowercase, spaces→underscore
+                        nm = re.sub(r'[^a-zA-Z0-9_]', '_', _ph.lower()).strip('_')
+                        nm = re.sub(r'_+', '_', nm)
+                        _source = "placeholder"
+                if not nm:
+                    _al = el.get("aria-label","").strip()
+                    if _al and el_type not in ("submit","button","reset","image","hidden"):
+                        nm = re.sub(r'[^a-zA-Z0-9_]', '_', _al.lower()).strip('_')
+                        nm = re.sub(r'_+', '_', nm)
+                        _source = "aria-label"
+
+                # Skip submit/button/reset with no meaningful name
+                if el_type in ("submit","button","reset","image") and not el.get("name","").strip():
+                    nm = ""
+
                 if nm and nm not in inputs:
                     inputs.append(nm)
                     form_fields_detail.append({
-                        "name":     nm,
-                        "type":     el_type,
-                        "hidden":   is_hidden,
-                        "file":     is_file,
-                        "required": el.has_attr("required"),
-                        "value":    el.get("value","") if is_hidden else "",
+                        "name":        nm,
+                        "name_source": _source,   # how we found the name
+                        "type":        el_type,
+                        "hidden":      is_hidden,
+                        "file":        is_file,
+                        "required":    el.has_attr("required"),
+                        "value":       el.get("value","") if is_hidden else "",
                     })
                 for da in ("data-param","data-field","data-name","data-key","data-input"):
                     dv = el.get(da,"").strip()
                     if dv and dv not in inputs:
                         inputs.append(dv)
                         form_fields_detail.append({
-                            "name":   dv,
-                            "type":   "data-attr",
-                            "hidden": False,
-                            "file":   False,
-                            "required": False,
-                            "value":  "",
+                            "name":        dv,
+                            "name_source": "data-attr",
+                            "type":        "data-attr",
+                            "hidden":      False,
+                            "file":        False,
+                            "required":    False,
+                            "value":       "",
                         })
             # data-* on the form element itself (e.g. data-params="field1,field2")
             for da in ("data-params","data-fields","data-inputs"):
@@ -3262,16 +3406,11 @@ class Spider:
                                 "value":  "",
                             })
             if inputs: self.emit.info("[Form] %s %s <- [%s]" % (method, full, ", ".join(inputs)))
-            # Guard: skip non-HTTP form actions and fragment-only actions.
-            # javascript:void(0), mailto:, #, #section — all JS-handled, not real endpoints.
-            _full_parsed = urlparse(full)
-            if _full_parsed.scheme not in ("http", "https"):
+            # Guard: only skip genuinely non-HTTP form actions.
+            # Empty/missing action already resolved to current page URL above — valid.
+            # javascript:void(0), mailto:, tel: → skip. Everything else → register.
+            if urlparse(full).scheme not in ("http", "https"):
                 continue
-            # Fragment-only: action="#" resolves to current page + fragment — not a new endpoint
-            _raw_action = (form.get("action") or "").strip()
-            if _raw_action.startswith("#") or _raw_action == "":
-                continue
-            # Fix C: register exact URL, write params directly to form bucket
             self.store.add_endpoint(full, method=method, source="Form", score=Conf.HIGH)
             self.store.add_query_params(full)
             _fkey = self.store._key(full, method)
@@ -3647,7 +3786,7 @@ def _auto_save(store: Store, target: str, out_path: Optional[str],
     domain    = re.sub(r'[^a-zA-Z0-9_\-]', '_', urlparse(target).netloc)
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = out_path if (out_path and out_path.endswith(".json")) \
-                else f"hellhound_{domain}_{ts}.json"
+                else f"spider_{domain}_{ts}.json"
 
     try:
         Path(json_path).write_text(store.export(target, fmt="json"))
