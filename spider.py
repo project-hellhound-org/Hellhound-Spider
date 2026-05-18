@@ -479,7 +479,7 @@ class Emit:
 # ══════════════════════════════════════════════════════════════════════
 
 def print_results(intel: dict, target: str, elapsed: float,
-                  emit: Emit, saved_path: str = ""):
+                  emit: Emit, saved_path: str = "", phase_times: tuple = ()):
 
     s   = intel.get("summary", {})
     eps = intel.get("endpoints", [])
@@ -541,8 +541,8 @@ def print_results(intel: dict, target: str, elapsed: float,
 
     if not nc:
         print(f"\n  {C.B}{C.W}PHASE LOGIC TIMELINE:{C.RST}")
-        # Estimating phases based on total elapsed
-        p1, p2, p3 = elapsed * 0.1, elapsed * 0.7, elapsed * 0.2
+        p1, p2, p3 = phase_times if (phase_times and len(phase_times)==3) else (elapsed*0.10, elapsed*0.70, elapsed*0.20)
+        print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Total {C.G}{elapsed:.1f}s{C.RST}")
         print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST}")
 
     # ── security findings ─────────────────────────────────────────────
@@ -605,14 +605,11 @@ def print_results(intel: dict, target: str, elapsed: float,
             count = len(items)
             emit.row(dtype.replace("_", " "), f"{count} findings", icon="●", label_colour=C.G)
             
-            # Show all if verbose, else limit to 10
-            limit = count if emit.verbose else 10
-            for item in items[:limit]:
-                val = item["value"]
-                disp = val if len(val) <= 60 else val[:57] + "..."
+            # Always show all findings — no truncation, no JSON redirects
+            for item in items:
+                val  = item["value"]
+                disp = val if len(val) <= 80 else val[:77] + "..."
                 emit.leader_row("  " + disp, item["source_url"])
-            if count > limit:
-                emit.row("  ...", f"{count-limit} more in JSON", icon="○")
 
     # ── endpoints table ───────────────────────────────────────────────
     if eps:
@@ -645,14 +642,9 @@ def print_results(intel: dict, target: str, elapsed: float,
                 _disp_clusters.add(_cl)
             deduped.append(ep)
 
-        shown    = deduped[:200]
-        overflow = len(deduped) - len(shown)
-
-        for ep in shown:
+        # Show ALL endpoints — no cap. JSON is for agents, CLI is for humans.
+        for ep in deduped:
             emit.endpoint_row(ep)
-
-        if overflow > 0:
-            emit.row("...", f"{overflow} more — see JSON report", icon="○")
 
         # ── param map for interesting endpoints ──────────────────────
         # Exclude 404_NOT_FOUND endpoints from param map — not injectable
@@ -661,7 +653,7 @@ def print_results(intel: dict, target: str, elapsed: float,
             if (e.get("params") or e.get("parameter_sensitive"))
             and e.get("confidence") != "404_NOT_FOUND"
             and 404 not in (e.get("observed_status") or [])
-        ][:40]
+        ]
 
         if interesting:
             emit.section(f"PARAMETER MAP  ({len(interesting)} endpoints)", orbital=True)
@@ -718,7 +710,7 @@ def print_results(intel: dict, target: str, elapsed: float,
                          icon="○", label_colour=C.R, value_colour=C.Y)
                 emit.row("Usage", "Wordlist / fuzz hints — do NOT inject at the JS file URL",
                          icon="○", label_colour=C.R, value_colour=C.Y)
-            for item in orphans[:20]:
+            for item in orphans:
                 js_file = item["js_file"]
                 params  = item["params"]
                 short   = js_file if len(js_file) <= 60 else js_file[:57] + "…"
@@ -747,7 +739,7 @@ def print_results(intel: dict, target: str, elapsed: float,
     auth_eps = [e for e in eps if e.get("auth_required")]
     if auth_eps:
         emit.section(f"AUTH-WALLED  ({len(auth_eps)} endpoints)", orbital=True)
-        for ep in auth_eps[:40]:
+        for ep in auth_eps:
             method = ep.get("methods",["GET"])[0]
             url = ep.get("url","")
             emit.row(method, url, icon="⬢", label_colour=C.RD)
@@ -812,18 +804,11 @@ def print_results(intel: dict, target: str, elapsed: float,
                     # Find matching crawled endpoint
                     matches = [u for u in all_ep_urls if cp in urlparse(u).path]
                     matches.sort()
-                    INLINE = 3
-                    for mu in matches[:INLINE]:
+                    for mu in matches:
                         if nc:
                             print(f"       └─ {mu}")
                         else:
                             print(f"  {C.GR}     └─{C.RST} {C.CYD}{mu}{C.RST}")
-                    overflow = len(matches) - INLINE
-                    if overflow > 0:
-                        if nc:
-                            print(f"       └─ [+{overflow} more — see JSON report]")
-                        else:
-                            print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — see JSON report]{C.RST}")
 
         # Show any endpoints queued from security.txt that aren't already shown
         other_sec = [u for u in sec_txt_urls if u not in seen_content]
@@ -832,17 +817,11 @@ def print_results(intel: dict, target: str, elapsed: float,
                 print(f"  [SecurityTxt] Queued {len(other_sec)} endpoint(s) for crawl:")
             else:
                 print(f"  {C.CY}●{C.RST} {C.CY}Queued endpoints{C.RST}  {C.GR}({len(other_sec)} URLs added to crawl){C.RST}")
-            for u in other_sec[:5]:
+            for u in other_sec:
                 if nc:
                     print(f"       └─ {u}")
                 else:
                     print(f"  {C.GR}     └─{C.RST} {C.CYD}{u}{C.RST}")
-            overflow = len(other_sec) - 5
-            if overflow > 0:
-                if nc:
-                    print(f"       └─ [+{overflow} more — see JSON report]")
-                else:
-                    print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — see JSON report]{C.RST}")
 
     # ── robots disallowed ─────────────────────────────────────────────
     robots = intel.get("robots_disallowed", [])
@@ -850,7 +829,7 @@ def print_results(intel: dict, target: str, elapsed: float,
         emit.section(f"ROBOTS DISALLOWED  ({len(robots)} paths)", orbital=True)
         all_ep_urls = [e.get("url","") for e in eps]
         parsed_target = intel.get("meta",{}).get("target","")
-        for path in robots[:50]:
+        for path in robots:
             emit.row("Disallow", path, icon="●", label_colour=C.O)
             # Find ALL crawled endpoints under this disallowed path — no cap
             seen = set()
@@ -862,18 +841,100 @@ def print_results(intel: dict, target: str, elapsed: float,
                     seen.add(u)
                     children.append(u)
             children.sort()
-            INLINE_LIMIT = 5
-            for child_url in children[:INLINE_LIMIT]:
+            for child_url in children:
                 if nc:
                     print(f"       └─ {child_url}")
                 else:
                     print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
-            overflow = len(children) - INLINE_LIMIT
-            if overflow > 0:
-                if nc:
-                    print(f"       └─ [+{overflow} more — all in JSON report]")
+
+    # ── intelligence summary — candidates and classifications ────────────
+    s_admin   = s.get("admin_panels", 0)
+    s_idor    = s.get("idor_candidates", 0)
+    s_sqli    = s.get("sqli_candidates", 0)
+    s_cmdi    = s.get("cmdi_candidates", 0)
+    s_upload  = s.get("upload_endpoints", 0)
+    s_auth_ep = s.get("auth_endpoints", 0)
+    intel_items = [
+        (s_admin,   "Admin Panel(s)",        C.R),
+        (s_idor,    "IDOR Candidate(s)",     C.Y),
+        (s_sqli,    "SQLi Candidate(s)",     C.O),
+        (s_cmdi,    "CMDi Candidate(s)",     C.O),
+        (s_upload,  "File Upload(s)",        C.CY),
+        (s_auth_ep, "Auth Endpoint(s)",      C.MG),
+    ]
+    # Filter: JS/CSS/font/image files are never real classified endpoints
+    _ASSET_EXT = re.compile(
+        r'\.(js|css|map|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|pdf|zip|gz|tar)$',
+        re.I
+    )
+    def _not_asset(ep):
+        url = ep.get("url","")
+        return not _ASSET_EXT.search(url.split("?")[0])
+
+    if any(count for count, _, _ in intel_items):
+        emit.section("INTELLIGENCE CLASSIFICATIONS", orbital=True)
+        for count, label, col in intel_items:
+            if count:
+                if label == "Admin Panel(s)":
+                    tagged = [e for e in real_eps if e.get("admin_panel") and _not_asset(e)]
+                elif label == "IDOR Candidate(s)":
+                    tagged = [e for e in real_eps if e.get("idor_candidate") and _not_asset(e)]
+                elif label == "SQLi Candidate(s)":
+                    tagged = [e for e in real_eps if e.get("sqli_candidate") and _not_asset(e)]
+                elif label == "CMDi Candidate(s)":
+                    tagged = [e for e in real_eps if e.get("cmdi_candidate") and _not_asset(e)]
+                elif label == "File Upload(s)":
+                    tagged = [e for e in real_eps if e.get("file_upload_candidate") and _not_asset(e)]
+                elif label == "Auth Endpoint(s)":
+                    tagged = [e for e in real_eps if e.get("auth_classification") and _not_asset(e)]
                 else:
-                    print(f"  {C.GR}     └─{C.RST} {C.Y}[+{overflow} more — all in JSON report]{C.RST}")
+                    tagged = []
+                count = len(tagged)
+                if not count:
+                    continue
+                if nc:
+                    print(f"  [{label}]  {count}")
+                else:
+                    print(f"  {col}●{C.RST} {col}{label:<22}{C.RST} {C.W}{count}{C.RST}")
+                for ep in tagged:
+                    eu = ep.get("url","")
+                    em = ep.get("method","GET")
+                    if nc:
+                        print(f"       └─ {em} {eu}")
+                    else:
+                        mc2 = {
+                            "GET": C.GD,"POST": C.Y,"PUT": C.O,
+                            "PATCH": C.O,"DELETE": C.R
+                        }.get(em, C.GL)
+                        print(f"  {C.GR}     └─{C.RST} {mc2}{em:<6}{C.RST} {C.W}{eu}{C.RST}")
+
+    # ── HTML comments found ───────────────────────────────────────────
+    comments = intel.get("comments", [])
+    if comments:
+        # Comments stored as {"content": text, "source": url}
+        # Only show genuinely sensitive comments — not every HTML comment
+        _SENSITIVE_KW = re.compile(
+            r'(?:password|passwd|secret|token|api[_-]?key|internal|'
+            r'prod(?:uction)?|staging|admin|backup|credential|'
+            r'todo[:\s]+remove|fixme|do\s+not\s+commit|debug[_-]?mode|'
+            r'hack|bypass|hardcod)',
+            re.I
+        )
+        _sensitive_comments = [
+            c for c in comments
+            if _SENSITIVE_KW.search(str(c.get("content","") or ""))
+        ]
+        if _sensitive_comments:
+            emit.section(f"HTML COMMENT LEAKS  ({len(_sensitive_comments)} sensitive)", orbital=True)
+            for c in _sensitive_comments:
+                content = str(c.get("content","") or c.get("text","") or c)[:120]
+                source  = str(c.get("url","") or c.get("source",""))
+                if nc:
+                    print(f"  [Comment] {content}  ← {source}")
+                else:
+                    print(f"  {C.R}●{C.RST} {C.Y}{content}{C.RST}")
+                    if source:
+                        print(f"  {C.GR}    └─{C.RST} {C.GR}{source}{C.RST}")
 
     # ── tech stack ────────────────────────────────────────────────────
     tech_list = intel.get("tech_stack", [])
@@ -889,7 +950,7 @@ def print_results(intel: dict, target: str, elapsed: float,
     # ── footer ────────────────────────────────────────────────────────
     print()
     if saved_path:
-        emit.always_success(f"Report saved → {saved_path}")
+        emit.always_success(f"[✓] Report saved → {saved_path}")
 
     screens = intel.get("screenshots", [])
     if screens:
@@ -1101,7 +1162,25 @@ _NUMERIC_ID_RE = re.compile(r'(?:id|uid|uuid|userid|account|key)$', re.I)
 _PATH_ID_RE    = re.compile(r'/(?:v[0-9]+/)?(?:[a-z]+/)?([0-9]{3,}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', re.I)
 _UUID_PATH_RE  = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[a-f0-9]{12}', re.I)
 
-_ADMIN_PATTERNS = re.compile(r'/(admin|manage|panel|control|dashboard|backend|config|setup|root|superuser)', re.I)
+# Admin panel classifier — two tiers
+# Tier 1: high-confidence standalone admin words — always flag
+# Tier 2: ambiguous words (setup, config, control) — only flag if
+#          they appear as a top-level path segment (depth 1 or 2)
+#          and the URL doesn't end in a static asset extension
+_ADMIN_TIER1 = re.compile(
+    r'/(?:admin|administrator|adminpanel|manage|manager|management|'
+    r'dashboard|backend|backoffice|controlpanel|cpanel|superuser|'
+    r'sysadmin|moderator|staff|internal/admin|admin/internal)(?:/|$)',
+    re.I
+)
+_ADMIN_TIER2 = re.compile(
+    r'^(?:https?://[^/]+)?/(?:panel|control|backend|config|configuration|'
+    r'settings|setup|install|maintenance|console|portal)(?:/[^/]*)?$',
+    re.I
+)
+_STATIC_EXT = re.compile(r'\.(css|js|json|xml|map|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|pdf|txt|csv|yaml|yml)$', re.I)
+
+_ADMIN_PATTERNS = _ADMIN_TIER1  # kept for backward compat — tier1 only used in classify
 _AUTH_PATTERNS  = {
     "login":  re.compile(r'/(login|signin|authenticate|auth)', re.I),
     "logout": re.compile(r'/(logout|signout)', re.I),
@@ -1232,6 +1311,11 @@ class Store:
 
     def add_endpoint(self, url, method="GET", source="Static",
                      params=None, score=Conf.LOW, auth_required=False):
+        # Intercept socket.io URLs at store level too — they bypass is_valid()
+        # when added via XHR observation (on_request handler)
+        if _SOCKETIO_RE.search(url):
+            self.add_socketio(url, method)
+            return self.endpoints.get(self._key(url, method))  # don't register
         key = self._key(url, method)
         if key not in self.endpoints:
             self.endpoints[key] = self._new_ep(url, method)
@@ -1318,6 +1402,13 @@ class Store:
         for p in params:
             if p and p not in bucket:
                 bucket.append(p)
+
+    def is_same_domain(self, url: str, ref_url: str) -> bool:
+        """Check if url is on same domain as ref_url — used for path queuing."""
+        try:
+            return urlparse(url).netloc == urlparse(ref_url).netloc
+        except Exception:
+            return False
 
     def add_socketio(self, url: str, method: str = "GET"):
         """
@@ -2108,6 +2199,57 @@ class Extractor:
     )
 
 
+    # JS comment sensitive patterns — high-signal credential leaks ONLY
+    # Avoids common library noise: disable/remove/workaround/todo fire constantly
+    _JS_COMMENT_SENSITIVE = re.compile(
+        r'(?:password\s*[:=][^,;\n]{3,}|passwd\s*[:=][^,;\n]{3,}|'
+        r'secret\s*[:=][^,;\n]{3,}|api[_-]?key\s*[:=][^,;\n]{3,}|'
+        r'private[_-]?key|hardcod(?:ed?|ing)|'
+        r'remove\s+before\s+(?:prod|deploy|release|commit)|'
+        r'do\s+not\s+(?:commit|push|deploy)|'
+        r'(?:admin|staging|prod)\s+(?:password|key|token|secret)\s*[:=]|'
+        r'bypass\s+(?:auth|security|check|validation))',
+        re.I
+    )
+    # Third-party library filenames — skip comment extraction entirely
+    _JS_LIBRARY_RE = re.compile(
+        r'(?:jquery|bootstrap|angular|react|lodash|moment|axios|backbone|'
+        r'respond\.js|html5shiv|modernizr|require\.js|webpack|babel|'
+        r'polyfill|vendor\.js|bundle\.js|chunk|runtime\.js|commons|datepicker)',
+        re.I
+    )
+    _JS_COMMENT_PATH_RE = re.compile(r'(/[a-zA-Z0-9_/][^\s\'"<>\\]{3,})')
+
+    @classmethod
+    def js_comments(cls, text, url, store, emit):
+        """High-signal JS comment extraction — library files skipped, strict patterns only."""
+        fname = url.lower().split('/')[-1].split('?')[0]
+        if cls._JS_LIBRARY_RE.search(fname):
+            return 0
+        found = 0
+        for m in re.finditer(r'//(.+)$', text, re.MULTILINE):
+            comment = m.group(1).strip()
+            if len(comment) < 10 or len(comment) > 120: continue
+            if comment[:1] in ("@", "=") or comment.startswith(
+                ("eslint","jshint","jscs","jslint","istanbul","tslint",
+                 "prettier","stylelint","sourceMappingURL","#")):
+                continue
+            if cls._JS_COMMENT_SENSITIVE.search(comment):
+                if store.add_secret(comment, "JS_Comment_Leak", url):
+                    emit.warn(f"[JS-Comment] {comment[:120]}")
+                    found += 1
+        for m in re.finditer(r'/\*(.*?)\*/', text, re.DOTALL):
+            block = m.group(1).strip()
+            if not block or len(block) > 400: continue
+            if "@param" in block or "@return" in block or "Copyright" in block:
+                continue
+            if cls._JS_COMMENT_SENSITIVE.search(block):
+                first = block.splitlines()[0].strip().lstrip("* ") if block else ""
+                if first and store.add_secret(first, "JS_Comment_Leak", url):
+                    emit.warn(f"[JS-Comment] {first[:120]}")
+                    found += 1
+        return found
+
     @classmethod
     def js_endpoints(cls, text, base_url, store, emit):
         # Dedup by (clean_path, frozenset(qs_params)) across all 5 patterns
@@ -2235,7 +2377,7 @@ class IntelligentProber:
                             self.store.record_status(url, m, s)
 
         self.emit.animator.stop_anim()
-        self.emit.always_info(f"[✓] Probing done — new methods: {new_methods_count}")
+        self.emit.always_info(f"[Method_Oracle] Probing done — {new_methods_count} new method(s) discovered")
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -2251,10 +2393,34 @@ async def probe_graphql(session, base, store, emit, rl):
             emit.warn(f"[GraphQL] Introspection OPEN → {url}")
             store.add_endpoint(url, method="POST", source="GraphQL", score=Conf.CONFIRMED)
             try:
-                schema = json.loads(text)
-                types  = schema.get("data",{}).get("__schema",{}).get("types",[])
-                store.graphql.append({"url": url, "types_count": len(types), "schema": schema})
-                emit.warn(f"[GraphQL] {len(types)} types exposed — disable introspection!")
+                schema     = json.loads(text)
+                types      = schema.get("data",{}).get("__schema",{}).get("types",[])
+                # Extract variables from mutations and queries — feed to param store
+                gql_params = []
+                for t in types:
+                    if t.get("name","").startswith("__"): continue
+                    for field in (t.get("fields") or []):
+                        for arg in (field.get("args") or []):
+                            aname = arg.get("name","").strip()
+                            if aname and aname not in gql_params:
+                                gql_params.append(aname)
+                        # Also register each field as an endpoint param hint
+                        fname = field.get("name","").strip()
+                        if fname:
+                            store.add_endpoint(url, method="POST", source="GraphQL_Field", score=Conf.HIGH)
+                            ep_key = store._key(url, "POST")
+                            if ep_key in store.endpoints:
+                                ep = store.endpoints[ep_key]
+                                for p in gql_params:
+                                    if p not in ep["params"]["js"]:
+                                        ep["params"]["js"].append(p)
+                store.graphql.append({
+                    "url": url, "types_count": len(types),
+                    "schema": schema, "extracted_params": gql_params
+                })
+                emit.warn(f"[GraphQL] {len(types)} types exposed — {len(gql_params)} variable(s) extracted")
+                if gql_params:
+                    emit.info(f"[GraphQL] Variables: {', '.join(gql_params[:20])}")
             except Exception as e:
                 emit.warn(f"[GraphQL] Parse error: {e}")
             return
@@ -2314,6 +2480,61 @@ async def probe_openapi(session, base, store, emit, rl):
 # Disallowed paths are crawled as high-value targets, not skipped.
 # ══════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════
+# WAYBACK MACHINE PROBE
+# Queries the Wayback CDX API for historical URLs on the target domain.
+# Surfaces old API versions, removed endpoints, backup paths, and
+# anything that was public at any point — even if gone from live site.
+# ══════════════════════════════════════════════════════════════════════
+
+class WaybackProbe:
+    CDX_API = "https://web.archive.org/cdx/search/cdx"
+
+    def __init__(self, base_url, store, queue, emit, rl, is_valid_fn):
+        self.base_url = base_url
+        self.store    = store
+        self.queue    = queue
+        self.emit     = emit
+        self.rl       = rl
+        self.is_valid = is_valid_fn
+
+    async def run(self, session):
+        parsed = urlparse(self.base_url)
+        domain = parsed.netloc
+        self.emit.always_info(f"[Wayback] Querying CDX API for {domain}")
+        try:
+            params = (
+                f"?url={domain}/*"
+                f"&output=json"
+                f"&fl=original"
+                f"&collapse=urlkey"
+                f"&limit=500"
+                f"&filter=statuscode:200"
+            )
+            s, h, text = await fetch(session, "GET",
+                                     self.CDX_API + params, self.rl)
+            if not text or s != 200:
+                self.emit.warn("[Wayback] CDX API unavailable or no results")
+                return
+            rows = json.loads(text)
+            # First row is header ["original"]
+            urls = [r[0] for r in rows[1:] if r and r[0].startswith("http")]
+            queued = 0
+            for u in urls:
+                # Only accept same-domain URLs that pass is_valid
+                if urlparse(u).netloc == domain and self.is_valid(u):
+                    # Mark as Wayback source — lower confidence (historical)
+                    self.store.add_endpoint(u, source="Wayback", score=Conf.LOW)
+                    self.queue.put_nowait((u, 2, "Wayback"))
+                    queued += 1
+            self.emit.always_info(
+                f"[Wayback] {len(urls)} historical URLs found — "
+                f"{queued} same-domain queued for crawl"
+            )
+        except Exception as e:
+            self.emit.warn(f"[Wayback] Error: {e}")
+
 class RobotsParser:
     def __init__(self, session, base_url, store, queue, emit, rl, is_valid_fn):
         self.session = session; self.base_url = base_url
@@ -2347,6 +2568,17 @@ class RobotsParser:
             re.I
         )
 
+        # Track which User-agent block we're in.
+        # Only process Disallow/Allow for * (wildcard) and our own agent.
+        # Per-bot blocks (Amazonbot, GPTBot etc.) are interesting metadata
+        # but their Disallow rules don't apply to us — we crawl everything
+        # a wildcard rule allows. Record bot-specific blocks for the report.
+        current_agents: list = []
+        is_active_block = False   # True when current block applies to us
+        bot_blocks: dict = {}     # agent → [disallowed paths]
+        content_signals: dict = {}  # Content-Signal field values
+        OUR_AGENT = "*"
+
         for raw_line in text.splitlines():
             # Extract comment before stripping it
             comment_text = ""
@@ -2361,19 +2593,46 @@ class RobotsParser:
                 self.emit.robots_comment_leak(comment_text)
 
             if not line:
+                # Blank line = end of current user-agent block
+                current_agents = []
+                is_active_block = False
                 continue
+
             lower = line.lower()
 
-            if lower.startswith("crawl-delay:"):
-                try:
-                    self.crawl_delay = float(line.split(":", 1)[1].strip())
-                    self.emit.always_info(f"[Robots] Crawl-delay: {self.crawl_delay}s — honouring")
-                except (ValueError, IndexError):
-                    pass
-            elif "disallow:" in lower:
+            if lower.startswith("user-agent:"):
+                agent = line.split(":", 1)[1].strip()
+                current_agents = [agent]
+                # Active if wildcard or our actual user-agent string
+                is_active_block = agent in ("*", OUR_AGENT)
+
+            elif lower.startswith("content-signal:"):
+                # RFC-like field used by some sites to signal AI content policy
+                val = line.split(":", 1)[1].strip()
+                for ag in (current_agents or ["*"]):
+                    content_signals[ag] = val
+                self.emit.always_info(f"[Robots] Content-Signal ({current_agents}): {val}")
+
+            elif lower.startswith("crawl-delay:"):
+                if is_active_block or not current_agents:
+                    try:
+                        self.crawl_delay = float(line.split(":", 1)[1].strip())
+                        self.emit.always_info(
+                            f"[Robots] Crawl-delay: {self.crawl_delay}s — honouring")
+                    except (ValueError, IndexError):
+                        pass
+
+            elif lower.startswith("disallow:"):
                 try:
                     path = line.split(":", 1)[1].strip()
                     if not path:
+                        continue
+                    # Record bot-specific blocks as metadata
+                    for ag in (current_agents or ["*"]):
+                        if ag != "*":
+                            bot_blocks.setdefault(ag, []).append(path)
+                    # Only crawl disallowed paths from wildcard blocks
+                    if not is_active_block and current_agents and "*" not in current_agents:
                         continue
                     full = urljoin(self.base_url, path)
                     if self.is_valid(full):
@@ -2386,10 +2645,12 @@ class RobotsParser:
                         self.emit.robots_entry("Disallow", path, queued)
                 except IndexError:
                     pass
-            elif "allow:" in lower:
+
+            elif lower.startswith("allow:"):
                 try:
                     path = line.split(":", 1)[1].strip()
-                    if not path:
+                    if not path or (not is_active_block and current_agents
+                                    and "*" not in current_agents):
                         continue
                     full = urljoin(self.base_url, path)
                     if self.is_valid(full):
@@ -2401,7 +2662,8 @@ class RobotsParser:
                         self.emit.robots_entry("Allow", path, queued)
                 except IndexError:
                     pass
-            elif "sitemap:" in lower:
+
+            elif lower.startswith("sitemap:"):
                 try:
                     sitemap_url = line.split(":", 1)[1].strip()
                     if not sitemap_url.startswith("http"):
@@ -2410,6 +2672,23 @@ class RobotsParser:
                     sit_count += 1
                 except (IndexError, Exception):
                     pass
+
+        # Store bot block metadata for the report
+        if bot_blocks:
+            self.store.add_secret(
+                str(bot_blocks),
+                "Robots_Bot_Blocks",
+                urljoin(self.base_url, "/robots.txt")
+            )
+            blocked_bots = list(bot_blocks.keys())
+            self.emit.always_info(
+                f"[Robots] {len(blocked_bots)} specific bot(s) blocked: "
+                f"{', '.join(blocked_bots[:8])}"
+                + (f" (+{len(blocked_bots)-8} more)" if len(blocked_bots) > 8 else "")
+            )
+        if content_signals:
+            for agent, signal in content_signals.items():
+                self.emit.always_info(f"[Robots] Content-Signal for {agent}: {signal}")
 
         self.emit._w(f"  {C.GR}└─{C.RST} {C.CYD}queued {dis_count + alw_count} paths for crawl{C.RST}")
         self.emit.always_info(
@@ -3078,8 +3357,21 @@ class SPAScanner:
 
 def classify_admin_endpoints(store: Store):
     for ep in store.endpoints.values():
-        if _ADMIN_PATTERNS.search(ep["url"]):
+        url = ep["url"]
+        # Never flag static asset files as admin panels
+        if _STATIC_EXT.search(url.split("?")[0]):
+            continue
+        # Tier 1: unambiguous admin path segments — always flag
+        if _ADMIN_TIER1.search(url):
             ep["admin_panel"] = True
+            continue
+        # Tier 2: ambiguous words — only flag if shallow path (depth ≤ 2)
+        # and the endpoint has been confirmed reachable (not just discovered)
+        if _ADMIN_TIER2.match(url):
+            # Only flag if we got a real 200 response (not just discovered)
+            obs = ep.get("observed_status", [])
+            if 200 in obs or 401 in obs or 403 in obs:
+                ep["admin_panel"] = True
 
 def classify_auth_endpoints(store: Store):
     for ep in store.endpoints.values():
@@ -3119,18 +3411,43 @@ def score_injection_candidates(store: Store):
             ep["cmdi_params"]     = cmdi_params
 
 def _flag_upload_endpoints(store: Store):
-    upload_re = re.compile(
-        r'/(?:upload|uploads|file|files|media|attachment|attachments|'
-        r'import|ingest|document|documents|image|images|avatar|photo|'
-        r'asset|assets|storage|blob|chunk|multipart)',
+    # Strong signals — path segments that unambiguously mean file upload
+    _UPLOAD_PATH_RE = re.compile(
+        r'/(?:upload|uploads|file-upload|fileupload|file_upload|'
+        r'attachment|attachments|import|ingest|multipart|'
+        r'avatar|photo|image-upload|media-upload)(?:/|$|\.)',
+        re.I
+    )
+    # Weaker signals — only count if also have a file param OR method is POST
+    _UPLOAD_WEAK_RE = re.compile(
+        r'/(?:file|files|media|document|documents|image|images|'
+        r'photo|photos|blob|storage)(?:/|$)',
         re.I
     )
     for ep in store.endpoints.values():
-        if upload_re.search(ep["url"]):
+        url = ep["url"]
+        # Never flag static assets — /assets/i18n/en.json etc.
+        if _STATIC_EXT.search(url.split("?")[0]):
+            continue
+        # Strong path signal — always flag
+        if _UPLOAD_PATH_RE.search(url):
             ep["file_upload_candidate"] = True
-        if any("file" in p.lower() or "upload" in p.lower()
-               for p in ep.get("params", {}).get("form", [])):
+            continue
+        # File/image param in a form — always flag regardless of URL
+        form_params = ep.get("params", {}).get("form", [])
+        has_file_param = any(
+            p.lower() in ("file","upload","image","photo","attachment","avatar","media","document")
+            or p.lower().endswith(("[file]","[upload]","[image]","[attachment]"))
+            for p in form_params
+        )
+        if has_file_param:
             ep["file_upload_candidate"] = True
+            continue
+        # Weak path signal — only flag if POST method observed
+        if _UPLOAD_WEAK_RE.search(url):
+            methods = ep.get("methods", [])
+            if "POST" in methods or "PUT" in methods:
+                ep["file_upload_candidate"] = True
 
 class Spider:
     def __init__(self, target, cfg, emit, cookies, extra_headers):
@@ -3310,6 +3627,7 @@ class Spider:
                 Extractor.js_endpoints(tag.string, url, self.store, self.emit)
                 Extractor.js_params(tag.string, url, self.store, self.emit)
                 Extractor.secrets(tag.string, url, self.store, self.emit)
+                Extractor.js_comments(tag.string, url, self.store, self.emit)
         for form in soup.find_all("form"):
             action = form.get("action") or url
             full   = urljoin(url, action)
@@ -3416,10 +3734,62 @@ class Spider:
             _fkey = self.store._key(full, method)
             if _fkey in self.store.endpoints:
                 _ep = self.store.endpoints[_fkey]
-                for _p in inputs:
-                    if _p and _p not in _ep["params"]["form"]:
-                        _ep["params"]["form"].append(_p)
-                # Merge form_fields_detail — preserve first observation per field name
+
+                # ── Source-aware param merge ──────────────────────────
+                # Track which source page each form param set came from.
+                # If this form was found on a DIFFERENT page than the
+                # previously stored params, and has MORE params, replace
+                # rather than merge. This prevents login forms on redirect
+                # pages from polluting the real form params.
+                #
+                # Example: /become_seller.php?redirect=login has a login
+                # form that POSTs to /become_seller.php — those login params
+                # (username, password) should NOT merge with the real seller
+                # form params (full_name, address, gst_number, xml_data).
+
+                _existing_source = _ep.get("_form_source_page", "")
+                _new_source       = url  # the page we found this form on
+
+                if not _existing_source:
+                    # First time — just write
+                    _ep["_form_source_page"] = _new_source
+                    for _p in inputs:
+                        if _p and _p not in _ep["params"]["form"]:
+                            _ep["params"]["form"].append(_p)
+                elif _existing_source == _new_source:
+                    # Same source page — normal additive merge
+                    for _p in inputs:
+                        if _p and _p not in _ep["params"]["form"]:
+                            _ep["params"]["form"].append(_p)
+                else:
+                    # Different source page — replace only if new set is richer
+                    # "Richer" = more params AND none of the new params are
+                    # common auth words that suggest a login form collision
+                    _AUTH_PARAMS = {"username","password","passwd","captcha",
+                                    "recaptcha","email","login","credential"}
+                    _new_is_auth  = sum(1 for p in inputs
+                                        if p.lower() in _AUTH_PARAMS) >= 2
+                    _old_is_auth  = sum(1 for p in _ep["params"]["form"]
+                                        if p.lower() in _AUTH_PARAMS) >= 2
+                    _new_richer   = len(inputs) > len(_ep["params"]["form"])
+
+                    if _new_is_auth and not _old_is_auth:
+                        # New set looks like login form, old set looks like
+                        # real app form — keep old, discard new
+                        pass
+                    elif _old_is_auth and not _new_is_auth:
+                        # Old set was a login form collision, new is better
+                        _ep["params"]["form"]    = [p for p in inputs if p]
+                        _ep["form_fields_detail"] = list(form_fields_detail)
+                        _ep["_form_source_page"]  = _new_source
+                    elif _new_richer:
+                        # Neither is obviously auth — keep the richer set
+                        _ep["params"]["form"]    = [p for p in inputs if p]
+                        _ep["form_fields_detail"] = list(form_fields_detail)
+                        _ep["_form_source_page"]  = _new_source
+                    # else: keep existing — it's equal or richer
+
+                # Always merge form_fields_detail additively for metadata
                 existing_names = {f["name"] for f in _ep.get("form_fields_detail", [])}
                 if "form_fields_detail" not in _ep:
                     _ep["form_fields_detail"] = []
@@ -3427,6 +3797,7 @@ class Spider:
                     if fd["name"] not in existing_names:
                         _ep["form_fields_detail"].append(fd)
                         existing_names.add(fd["name"])
+
             self._discover_url(full, depth+1, "Form_Action", show_feed=True)
         for attr in ("data-src","data-href","data-url"):
             for tag in soup.find_all(attrs={attr: True}):
@@ -3462,6 +3833,7 @@ class Spider:
         Extractor.secrets(text, url, self.store, self.emit)
         Extractor.js_endpoints(text, url, self.store, self.emit)
         Extractor.js_params(text, url, self.store, self.emit)
+        Extractor.js_comments(text, url, self.store, self.emit)
         await self._check_sourcemap(session, url)
         for m in re.finditer(r'import\s*\(\s*["\']([^"\']+)["\']', text):
             full = urljoin(url, m.group(1))
@@ -3491,6 +3863,23 @@ class Spider:
         # Record status early
         self.store.record_status(url, 'GET', s)
 
+        # ── Cookie param extraction ────────────────────────────────────
+        # Set-Cookie header names are injectable params for session manipulation.
+        # e.g. Set-Cookie: user_role=guest → user_role is a param name.
+        _raw_cookies = hdrs.get("Set-Cookie", "") or hdrs.get("set-cookie", "")
+        if _raw_cookies:
+            _cookie_ep_key = self.store._key(url, "GET")
+            if _cookie_ep_key in self.store.endpoints:
+                _cep = self.store.endpoints[_cookie_ep_key]
+                for _ck_part in _raw_cookies.split(";"):
+                    _ck_name = _ck_part.strip().split("=")[0].strip()
+                    _SKIP_CK = {"path","domain","expires","max-age","secure","httponly",
+                                "samesite","version","comment","priority"}
+                    if _ck_name and _ck_name.lower() not in _SKIP_CK:
+                        if _ck_name not in _cep["params"].get("runtime",[]):
+                            _cep["params"].setdefault("runtime",[]).append(_ck_name)
+                            self.emit.info(f"[Cookie-Param] {_ck_name} ← {url}")
+
         # Feed line
         ct = (hdrs.get('Content-Type', '') or hdrs.get('content-type', '')).lower()
         is_js = 'javascript' in ct or url.split('?')[0].endswith('.js')
@@ -3505,7 +3894,6 @@ class Spider:
             self.store.add_endpoint(url, source=source, score=Conf.MEDIUM, auth_required=True)
             self.emit.warn(f'[Auth-wall:{s}] {url}')
         elif s in (500, 501, 502, 503) and body:
-            import re
             _ERR_RE = re.compile(r'(?:Traceback|Exception in thread|SyntaxError|ParseError|SQLSTATE|You have an error in your SQL|ORA-\d{5}|Fatal error:|Warning:|Uncaught \w+Error|at [a-zA-Z\.]+\([a-zA-Z]+\.java:\d+\))', re.I)
             if _ERR_RE.search(body):
                 self.store.add_endpoint(url, source='Error_Leak', score=Conf.HIGH)
@@ -3547,7 +3935,6 @@ class Spider:
                     self.emit.crawl_feed('JS', 'GET', url, extra=[f'├─ {after-before} endpoints extracted'])
             elif 'json' in ct:
                 self.store.add_endpoint(url, source='JSON_Response', score=Conf.MEDIUM)
-                import re
                 for m in re.finditer(r'"([/][a-zA-Z0-9_\-\/]+)"', body):
                     path = m.group(1)
                     if len(path) > 3:
@@ -3556,6 +3943,25 @@ class Spider:
                             self.store.add_endpoint(full, source='JSON_Path', score=Conf.LOW)
                             if not self._over_budget(depth + 1):
                                 self._discover_url(full, depth + 1, 'JSON_Path', show_feed=True)
+                # ── JSON response ID chaining ─────────────────────────
+                # Extract top-level keys that look like ID/reference fields.
+                # e.g. {"user_id": 123, "post_id": 456, "session_token": "abc"}
+                # These become IDOR-relevant params for related endpoints.
+                _ID_KEY_RE = re.compile(
+                    r'"\s*([a-zA-Z_][a-zA-Z0-9_]{1,40}(?:_id|_token|_key|Id|Token|Key|ID))\s*"\s*:\s*',
+                    re.I
+                )
+                _ep_key = self.store._key(url, "GET")
+                if _ep_key in self.store.endpoints:
+                    _ep = self.store.endpoints[_ep_key]
+                    _chained = 0
+                    for _idm in _ID_KEY_RE.finditer(body[:8000]):
+                        _pname = _idm.group(1).strip()
+                        if _pname and _pname not in _ep["params"].get("runtime", []):
+                            _ep["params"].setdefault("runtime", []).append(_pname)
+                            _chained += 1
+                    if _chained:
+                        self.emit.info(f"[ID-Chain] {_chained} ID field(s) chained from {url}")
                 self._extract_body_param_hints(url, body)
 
     async def _worker(self, session, worker_id, crawl_delay):
@@ -3624,6 +4030,10 @@ class Spider:
                                           timeout=timeout, connector=connector) as session:
             try:
                 # Start persistent status animator
+                _t_phase_start = time.time()
+                _t_recon = 0.0
+                _t_crawl = 0.0
+                _t_audit = 0.0
                 self.emit.animator.start_anim("Recon Probing Base")
                 if self.cfg.enable_graphql:
                     await probe_graphql(session, self.target, self.store, self.emit, self.rl)
@@ -3642,6 +4052,12 @@ class Spider:
                             _ct = (_h or {}).get("content-type", "").lower()
                             if Extractor.is_real_file(_ct, _t, None) and not Extractor.is_soft_404(_t, _s):
                                 await robots.parse_sitemap(_smap_url)
+
+                # Wayback Machine — historical URL discovery
+                self.emit.animator.update(0, "Recon Wayback")
+                _wayback = WaybackProbe(self.target, self.store, self.queue,
+                                         self.emit, self.rl, self.is_valid)
+                await _wayback.run(session)
 
                 self.emit.animator.update(0, "Recon Well-Known")
                 for _wk in _WELL_KNOWN_PATHS:
@@ -3696,6 +4112,8 @@ class Spider:
                             after = len(session.cookie_jar)
                             if after > before:
                                 self.emit.always_success(f"[Sync] Synchronized {after-before} cookies from SPA session")
+                _t_recon = time.time() - _t_phase_start
+                _t_phase_start = time.time()
                 self.emit.always_info(
                     f"[Spider] Crawl started — depth={self.cfg.max_depth}, "
                     f"concurrency={self.cfg.concurrency}, "
@@ -3724,11 +4142,17 @@ class Spider:
                 
                 await asyncio.gather(*workers, return_exceptions=True)
 
+                _t_crawl = time.time() - _t_phase_start
+                _t_phase_start = time.time()
                 # Phase 3: Intelligent Probing
                 if self.cfg.enable_probing:
                     prober = IntelligentProber(session, self.store, self.emit, self.rl, self.cfg)
                     await prober.run()
 
+                _t_audit = time.time() - _t_phase_start
+                self._t_recon = _t_recon
+                self._t_crawl = _t_crawl
+                self._t_audit = _t_audit
                 # Phase 4: Screenshots
                 if self.cfg.enable_screenshots and spa_ctx:
                     self.emit.animator.start_anim("Capturing Screenshots")
@@ -3790,7 +4214,7 @@ def _auto_save(store: Store, target: str, out_path: Optional[str],
 
     try:
         Path(json_path).write_text(store.export(target, fmt="json"))
-        emit.always_info(f"[Report] JSON saved → {json_path}")
+        pass  # JSON saved silently — it's for agents, not announced to user
     except Exception as e:
         emit.warn(f"[Report] JSON save failed: {e}")
         json_path = ""
@@ -3883,6 +4307,11 @@ def _do_run(target: str, cfg: Config, emit,
         return {"raw": "Spider failed to initialize.", "intel": {}}
 
     elapsed = time.time() - start
+    phase_times = (
+        getattr(spider, "_t_recon", elapsed * 0.10),
+        getattr(spider, "_t_crawl", elapsed * 0.70),
+        getattr(spider, "_t_audit", elapsed * 0.20),
+    )
 
     # Always auto-save JSON
     json_path = _auto_save(spider.store, target, cfg.output_file,
@@ -3892,7 +4321,8 @@ def _do_run(target: str, cfg: Config, emit,
     result = {"raw": "", "intel": intel}
 
     # Print rich CLI results
-    print_results(intel, target, elapsed, emit, saved_path=json_path)
+    print_results(intel, target, elapsed, emit, saved_path=json_path,
+                  phase_times=phase_times)
 
     return result
 
