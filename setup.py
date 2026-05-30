@@ -15,7 +15,7 @@ setup(
         "lxml>=5.0.0",
     ],
     extras_require={
-        "spa": ["playwright>=1.40.0"],
+        "spa": ["playwright>=1.40.0", "playwright-stealth>=1.0.6"],
     },
     entry_points={
         "console_scripts": [

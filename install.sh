@@ -134,7 +134,7 @@ fi
 if [[ "$INSTALL_PLAYWRIGHT" =~ ^[Yy]$ ]]; then
     stop_animation
     info "Mounting SPA Engine..."
-    "$VENV_PYTHON" -m pip install --quiet --upgrade playwright
+    "$VENV_PYTHON" -m pip install --quiet --upgrade playwright playwright-stealth
     
     info "Fetching Chromium (this may take a minute)..."
     # Filter Playwright's OS support warnings on Kali/unsupported distros to keep output clean.

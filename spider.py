@@ -543,7 +543,6 @@ def print_results(intel: dict, target: str, elapsed: float,
         print(f"\n  {C.B}{C.W}PHASE LOGIC TIMELINE:{C.RST}")
         p1, p2, p3 = phase_times if (phase_times and len(phase_times)==3) else (elapsed*0.10, elapsed*0.70, elapsed*0.20)
         print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Total {C.G}{elapsed:.1f}s{C.RST}")
-        print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST}")
 
     # ── security findings ─────────────────────────────────────────────
     secrets    = intel.get("secrets", [])
@@ -1011,6 +1010,7 @@ class Config:
             ".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".tar.gz", ".rar",
             ".webp", ".mov", ".webm", ".exe", ".dmg", ".apk", ".bmp", ".tiff"
         ])
+        self.har_file           = kw.get("har_file",           None)
         self.enable_noise_filter = kw.get("enable_noise_filter", True)
         self.enable_graphql     = kw.get("enable_graphql",     True)
         self.enable_openapi     = kw.get("enable_openapi",     True)
@@ -1159,7 +1159,14 @@ _ID_RE = re.compile(
 )
 
 _NUMERIC_ID_RE = re.compile(r'(?:id|uid|uuid|userid|account|key)$', re.I)
-_PATH_ID_RE    = re.compile(r'/(?:v[0-9]+/)?(?:[a-z]+/)?([0-9]{3,}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', re.I)
+# Numeric IDs must be ≥4 digits to avoid matching image dimensions (800, 400, 720)
+# Also must NOT be followed by another short number (paired = dimensions, not IDs)
+_PATH_ID_RE    = re.compile(
+    r'/(?:v[0-9]+/)?(?:[a-z][a-z0-9_-]*/)?'
+    r'([0-9]{4,}(?![0-9x/][0-9]{2,4}(?:[/?]|$))|'   # 4+ digit number, not dimension pair
+    r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',  # UUID
+    re.I
+)
 _UUID_PATH_RE  = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[a-f0-9]{12}', re.I)
 
 # Admin panel classifier — two tiers
@@ -1182,10 +1189,12 @@ _STATIC_EXT = re.compile(r'\.(css|js|json|xml|map|woff2?|ttf|eot|svg|png|jpg|jpe
 
 _ADMIN_PATTERNS = _ADMIN_TIER1  # kept for backward compat — tier1 only used in classify
 _AUTH_PATTERNS  = {
-    "login":  re.compile(r'/(login|signin|authenticate|auth)', re.I),
-    "logout": re.compile(r'/(logout|signout)', re.I),
-    "mfa":    re.compile(r'/(mfa|2fa|otp|totp)', re.I),
-    "pass":   re.compile(r'/(password|reset|forgot)', re.I),
+    "login":    re.compile(r'/(login|signin|sign-in|log-in|authenticate|auth)', re.I),
+    "register": re.compile(r'/(register|signup|sign-up|create.account|join|enroll)', re.I),
+    "logout":   re.compile(r'/(logout|signout|log-out|sign-out)', re.I),
+    "mfa":      re.compile(r'/(mfa|2fa|otp|totp|verify|verification)', re.I),
+    "pass":     re.compile(r'/(password|reset|forgot|change.password)', re.I),
+    "token":    re.compile(r'/(token|refresh.token|oauth|authorize)', re.I),
 }
 
 _SQLI_PARAM_RE = re.compile(r'(?:id|select|report|update|query|search|from|where|order|by|group|limit|offset|slug|category|tag)$', re.I)
@@ -1225,6 +1234,8 @@ _SOCKETIO_RE = re.compile(r'/socket\.io/\??.*EIO=', re.I)
 
 def normalize(url: str) -> str:
     try:
+        # Fix Windows-style backslash paths from href attributes
+        url = url.replace(chr(92)+chr(92), "/").replace(chr(92), "/")
         p  = urlparse(url)
         qs = urlencode(sorted(parse_qs(p.query, keep_blank_values=True).items()), doseq=True)
         return urlunparse((p.scheme.lower(), p.netloc.lower(),
@@ -2250,6 +2261,42 @@ class Extractor:
                     found += 1
         return found
 
+    _ROUTE_PATTERNS = [
+        re.compile(r'<Route[^>]+path=["\']([/][^"\'\s>]+)["\']', re.I),
+        re.compile(r'\{[^}]{0,80}path\s*:\s*["\']([/][^"\'\s,}]{2,})["\']\s*[,}]'),
+        re.compile(r'(?:router|routes)\s*(?:\.add|\[|=)\s*(?:\[)?\s*\{[^}]{0,80}path\s*:\s*["\']([/][^"\'\s,}]{2,})["\']', re.I),
+        re.compile(r'(?:app|router|server)\.(get|post|put|patch|delete|all)\s*\(\s*["\']([/][^"\'\s,)]{2,})["\']\s*,', re.I),
+    ]
+    _ROUTE_PARAM_RE = re.compile(r'[:{}\[\]]([a-zA-Z][a-zA-Z0-9_]+)')
+
+    @classmethod
+    def js_routes(cls, text, base_url, store, emit):
+        """Extract route definitions from React Router, Vue Router, Angular, Express etc."""
+        found = 0
+        seen  = set()
+        for pat in cls._ROUTE_PATTERNS:
+            for m in re.finditer(pat, text):
+                path = m.group(m.lastindex or 1).strip()
+                if not path or path in seen or len(path) < 2: continue
+                if path.startswith(("http","//","#","$","{")):  continue
+                seen.add(path)
+                # Normalize dynamic segments: /users/:id → /users/{id}
+                clean = re.sub(r'[:{}\[\]][a-zA-Z][a-zA-Z0-9_]*', '{param}', path)
+                if not clean.startswith("/"): continue
+                full = urljoin(base_url, clean)
+                if store.add_endpoint(full, source="JS_Route", score=Conf.MEDIUM):
+                    emit.info(f"[JS-Route] {path}")
+                    found += 1
+                    params = cls._ROUTE_PARAM_RE.findall(path)
+                    if params:
+                        ek = store._key(full, "GET")
+                        if ek in store.endpoints:
+                            ep = store.endpoints[ek]
+                            for p in params:
+                                if p not in ep["params"]["query"]:
+                                    ep["params"]["query"].append(p)
+        return found
+
     @classmethod
     def js_endpoints(cls, text, base_url, store, emit):
         # Dedup by (clean_path, frozenset(qs_params)) across all 5 patterns
@@ -2338,46 +2385,63 @@ _WELL_KNOWN_PATHS = [
 # ══════════════════════════════════════════════════════════════════════
 
 class IntelligentProber:
-    _METHODS = ["PUT", "PATCH", "DELETE", "HEAD", "TRACE"]
+    _METHODS = ["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
     def __init__(self, session, store, emit, rl, cfg):
         self.session = session; self.store = store
         self.emit = emit; self.rl = rl; self.cfg = cfg
 
     async def run(self):
-        # Filter for high-confidence endpoints or those with parameters
         all_eps = self.store.all_endpoints()
         targets = [
             e for e in all_eps
-            if (e.get("confidence", 0) >= Conf.MEDIUM or 
+            if (e.get("confidence", 0) >= Conf.MEDIUM or
                 any(e.get("params",{}).values()))
         ]
-        
         if not targets:
             return
 
         self.emit.always_info(f"Phase: Intelligent Probing… ({len(targets)} endpoints)")
         self.emit.animator.start_anim("Intelligent Probing", total=len(targets))
-        
+
+        # Action-named paths that are likely POST-only
+        _API_ACTION_RE = re.compile(
+            r'/(?:parse|process|submit|send|create|add|upload|register|'
+            r'login|signin|auth|verify|validate|execute|run|trigger|'
+            r'convert|transform|generate|compute|analyze|check|scan|'
+            r'search|query|resolve|lookup|decode|encode)(?:/|$|\?|\#)',
+            re.I
+        )
+
         new_methods_count = 0
         for i, ep in enumerate(targets):
             self.emit.animator.update(i+1)
-            url = ep["url"]
+            url           = ep["url"]
             known_methods = ep.get("methods", ["GET"])
-            
-            # Method Oracle: Probing for hidden API capabilities
-            if self.cfg.enable_method_disc:
-                test_set = [m for m in self._METHODS if m not in known_methods]
-                for m in test_set:
-                    s, h, t = await fetch(self.session, m, url, self.rl)
-                    if s in (200, 201, 204, 401, 403):
-                        if self.store.update_methods(url, [m]):
-                            new_methods_count += 1
-                        if s in (401, 403):
-                            self.store.record_status(url, m, s)
+            obs_status    = ep.get("observed_status", [])
+
+            if not self.cfg.enable_method_disc:
+                continue
+
+            test_set = [m for m in self._METHODS if m not in known_methods]
+
+            # POST probe: try POST on endpoints that returned 404/405 on GET
+            # OR whose path looks like an action verb — these are often POST-only
+            if "POST" not in known_methods:
+                if any(s in obs_status for s in (404, 405)) or _API_ACTION_RE.search(url):
+                    test_set = ["POST"] + test_set
+
+            for m in test_set:
+                s, h, _ = await fetch(self.session, m, url, self.rl)
+                if s in (200, 201, 202, 204, 301, 302, 400, 401, 403):
+                    self.store.record_status(url, m, s)
+                    if self.store.update_methods(url, [m]):
+                        self.emit.info(f"[Method_Oracle] {m} {url} → {s}")
+                        new_methods_count += 1
 
         self.emit.animator.stop_anim()
-        self.emit.always_info(f"[Method_Oracle] Probing done — {new_methods_count} new method(s) discovered")
+        self.emit.always_info(
+            f"[Method_Oracle] Probing done — {new_methods_count} new method(s) discovered")
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -2488,6 +2552,142 @@ async def probe_openapi(session, base, store, emit, rl):
 # anything that was public at any point — even if gone from live site.
 # ══════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════
+# SUBDOMAIN ENUMERATOR — crt.sh certificate transparency logs
+# Zero API key. Discovers subdomains that may host staging, admin,
+# API, or internal services invisible to the main crawler.
+# ══════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HAR FILE IMPORTER
+# Mines a browser-exported HAR (HTTP Archive) file for every request
+# the browser made during a real session — including auth-gated calls,
+# interaction-gated calls, and anything a bot cannot reach on its own.
+# Usage: spider https://target.com --har /path/to/session.har
+# ══════════════════════════════════════════════════════════════════════
+
+class HARImporter:
+    def __init__(self, har_path, store, emit, is_valid_fn, base_url):
+        self.har_path = har_path
+        self.store    = store
+        self.emit     = emit
+        self.is_valid = is_valid_fn
+        self.base_url = base_url
+
+    def run(self):
+        """Parse HAR synchronously — called before async crawl starts."""
+        import json as _j
+        try:
+            with open(self.har_path, "r", encoding="utf-8", errors="ignore") as f:
+                har = _j.load(f)
+        except Exception as e:
+            self.emit.warn(f"[HAR] Failed to load {self.har_path}: {e}")
+            return 0
+
+        entries = har.get("log", {}).get("entries", [])
+        added   = 0
+        for entry in entries:
+            req     = entry.get("request", {})
+            method  = req.get("method", "GET").upper()
+            url     = req.get("url", "").split("#")[0]
+            if not url or not url.startswith("http"):
+                continue
+            if not self.is_valid(url):
+                continue
+
+            ep = self.store.add_endpoint(url, method=method,
+                                          source="HAR", score=7)  # HIGH
+            added += 1
+
+            # Extract query params
+            for qp in req.get("queryString", []):
+                name = qp.get("name","").strip()
+                if name and ep and name not in ep.get("params",{}).get("query",[]):
+                    ep.setdefault("params",{}).setdefault("query",[]).append(name)
+
+            # Extract POST body params
+            post_data = req.get("postData", {})
+            if post_data:
+                mime = post_data.get("mimeType","")
+                text = post_data.get("text","")
+                # Form-encoded
+                for pp in post_data.get("params", []):
+                    name = pp.get("name","").strip()
+                    if name and ep and name not in ep.get("params",{}).get("form",[]):
+                        ep.setdefault("params",{}).setdefault("form",[]).append(name)
+                # JSON body
+                if "json" in mime and text:
+                    try:
+                        body = _j.loads(text)
+                        if isinstance(body, dict):
+                            for k in body.keys():
+                                if ep and k not in ep.get("params",{}).get("form",[]):
+                                    ep.setdefault("params",{}).setdefault("form",[]).append(k)
+                    except Exception:
+                        pass
+
+            # Extract response-revealed endpoints
+            resp     = entry.get("response", {})
+            status   = resp.get("status", 0)
+            if status:
+                self.store.record_status(url, method, status)
+
+        self.emit.always_success(
+            f"[HAR] Imported {added} requests from {self.har_path}")
+        return added
+
+class SubdomainEnumerator:
+    CRT_SH = "https://crt.sh/?q={domain}&output=json"
+
+    def __init__(self, base_url, store, queue, emit, is_valid_fn):
+        self.base_url  = base_url
+        self.store     = store
+        self.queue     = queue
+        self.emit      = emit
+        self.is_valid  = is_valid_fn
+
+    async def run(self):
+        from urllib.parse import urlparse as _up
+        parsed     = _up(self.base_url)
+        domain     = parsed.netloc.split(":")[0].lstrip("www.")
+        scheme     = parsed.scheme
+        self.emit.always_info(f"[CRT.sh] Enumerating subdomains for {domain}")
+        try:
+            import aiohttp as _aio
+            async with _aio.ClientSession(
+                timeout=_aio.ClientTimeout(total=15),
+                headers={"User-Agent": "Mozilla/5.0"}
+            ) as sess:
+                async with sess.get(self.CRT_SH.format(domain=f"%.{domain}")) as resp:
+                    if resp.status != 200:
+                        self.emit.warn(f"[CRT.sh] No results (status {resp.status})")
+                        return
+                    data = await resp.json(content_type=None)
+        except Exception as e:
+            self.emit.warn(f"[CRT.sh] Error: {e}")
+            return
+
+        seen  = set()
+        added = 0
+        for entry in (data or []):
+            name = entry.get("name_value","").strip()
+            for sub in name.splitlines():
+                sub = sub.strip().lstrip("*.")
+                if not sub or sub in seen or sub == domain: continue
+                if not sub.endswith(domain): continue
+                seen.add(sub)
+                # Queue root URL of each discovered subdomain
+                for _s in (scheme,):
+                    candidate = f"{_s}://{sub}"
+                    self.store.add_endpoint(candidate, source="CRT_Subdomain", score=1)
+                    self.queue.put_nowait((candidate + "/", 1, "CRT_Subdomain"))
+                    added += 1
+
+        self.emit.always_info(
+            f"[CRT.sh] {len(seen)} unique subdomain(s) found — {added} queued")
+
 class WaybackProbe:
     CDX_API = "https://web.archive.org/cdx/search/cdx"
 
@@ -2512,9 +2712,15 @@ class WaybackProbe:
                 f"&limit=500"
                 f"&filter=statuscode:200"
             )
-            s, h, text = await fetch(session, "GET",
-                                     self.CDX_API + params, self.rl)
-            if not text or s != 200:
+            try:
+                import aiohttp as _aio
+                async with _aio.ClientSession(timeout=_aio.ClientTimeout(total=12)) as _ws:
+                    async with _ws.get(self.CDX_API + params) as _wr:
+                        s = _wr.status
+                        text = await _wr.text() if s == 200 else ""
+            except Exception as _we:
+                self.emit.warn(f"[Wayback] CDX timeout/error: {_we}")
+                return
                 self.emit.warn("[Wayback] CDX API unavailable or no results")
                 return
             rows = json.loads(text)
@@ -2666,8 +2872,14 @@ class RobotsParser:
             elif lower.startswith("sitemap:"):
                 try:
                     sitemap_url = line.split(":", 1)[1].strip()
-                    if not sitemap_url.startswith("http"):
+                    # Handle relative sitemap URLs (Sitemap: /sitemap.xml)
+                    if sitemap_url.startswith("/"):
+                        sitemap_url = urljoin(self.base_url, sitemap_url)
+                    elif not sitemap_url.startswith("http"):
+                        # Could be "https://..." split on first colon — rejoin
                         sitemap_url = line.partition(":")[2].strip()
+                        if not sitemap_url.startswith("http"):
+                            sitemap_url = urljoin(self.base_url, sitemap_url)
                     await self.parse_sitemap(sitemap_url)
                     sit_count += 1
                 except (IndexError, Exception):
@@ -2957,11 +3169,28 @@ class SPAScanner:
         try:
             self._pw = await async_playwright().start()
             browser = await self._pw.chromium.launch(headless=True, args=[
-                    "--no-sandbox","--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"])
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-default-apps",
+            ])
+            # Stealth context — mimic a real Chrome browser fingerprint
             ctx_args: dict = {
                 "ignore_https_errors": True,
-                "viewport": {"width": 1280, "height": 720}
+                "viewport":            {"width": 1366, "height": 768},
+                "user_agent":          (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "locale":              "en-US",
+                "timezone_id":         "America/New_York",
+                "color_scheme":        "light",
+                "java_script_enabled": True,
             }
             if self.cookies:
                 parsed = urlparse(self.target_url)
@@ -2971,10 +3200,44 @@ class SPAScanner:
             if self.extra_headers:
                 ctx_args["extra_http_headers"] = self.extra_headers
             context = await browser.new_context(**ctx_args)
+
+            # ── WAF/Bot Stealth patches ─────────────────────────────────
+            _STEALTH_JS = """
+                Object.defineProperty(navigator, "webdriver", {get: () => undefined, configurable: true});
+                Object.defineProperty(navigator, "plugins", {get: () => [
+                    {name:"Chrome PDF Plugin",filename:"internal-pdf-viewer"},
+                    {name:"Chrome PDF Viewer",filename:"mhjfbmdgcfjbbpaeojofohoefgiehjai"},
+                    {name:"Native Client",filename:"internal-nacl-plugin"}
+                ], configurable: true});
+                Object.defineProperty(navigator, "languages", {get: () => ["en-US","en"], configurable: true});
+                try { const orig = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (p) => p.name === "notifications"
+                        ? Promise.resolve({state: Notification.permission}) : orig(p);
+                } catch(e) {}
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            """
+            await context.add_init_script(_STEALTH_JS)
+            _stealth_fn = None
+            try:
+                from playwright_stealth import stealth_async as _sa  # type: ignore
+                _stealth_fn = _sa
+                self.emit.always_info("[SPA] playwright-stealth loaded — deep WAF evasion ready")
+            except ImportError:
+                self.emit.always_info("[SPA] Manual stealth active (pip install playwright-stealth for full WAF coverage)")
+            except Exception as _sle:
+                self.emit.warn(f"[SPA] playwright-stealth load error: {_sle}")
             await context.route(
                 re.compile(r'\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|mp4|mp3)(\?.*)?$'),
                 lambda route, _: asyncio.create_task(route.abort()))
             page = await context.new_page()
+            # Apply playwright-stealth per-page (2.x API requires page not context)
+            if _stealth_fn:
+                try:
+                    await _stealth_fn(page)
+                    self.emit.always_info("[SPA] playwright-stealth active — WAF evasion on")
+                except Exception as _se:
+                    self.emit.warn(f"[SPA] stealth apply failed: {_se}")
 
             async def on_request(req):
                 url = req.url; rtype = req.resource_type; method = req.method or "GET"
@@ -3355,8 +3618,14 @@ class SPAScanner:
 # RECON UTILITIES (v12.3)
 # ══════════════════════════════════════════════════════════════════════
 
+
+def _is_confirmed(ep: dict) -> bool:
+    """True if endpoint received a real HTTP response — not just speculatively discovered."""
+    return bool(ep.get("observed_status", []))
+
 def classify_admin_endpoints(store: Store):
     for ep in store.endpoints.values():
+        if not _is_confirmed(ep): continue   # speculative — skip
         url = ep["url"]
         # Never flag static asset files as admin panels
         if _STATIC_EXT.search(url.split("?")[0]):
@@ -3375,15 +3644,31 @@ def classify_admin_endpoints(store: Store):
 
 def classify_auth_endpoints(store: Store):
     for ep in store.endpoints.values():
+        if not _is_confirmed(ep): continue   # speculative — skip
         for label, pat in _AUTH_PATTERNS.items():
             if pat.search(ep["url"]):
                 ep.setdefault("auth_classification", [])
                 if label not in ep["auth_classification"]:
                     ep["auth_classification"].append(label)
 
+# Infrastructure paths that are never IDOR targets regardless of numeric segments
+_IDOR_EXCLUDE_RE = re.compile(
+    r'/(?:cdn-cgi|_next|__webpack|webpack|static|assets|public|'
+    r'images?|img|icons?|fonts?|media|thumbnails?|placeholder|'
+    r'favicon|robots|sitemap|opensearch|manifest|sw\.js)(?:/|$|\?)',
+    re.I
+)
+
 def classify_idor_candidates(store: Store):
     for ep in store.endpoints.values():
+        if not _is_confirmed(ep): continue   # speculative — skip
         url = ep["url"]
+        # Never flag infrastructure, CDN, or static asset paths
+        if _IDOR_EXCLUDE_RE.search(url):
+            continue
+        # Never flag static files
+        if _STATIC_EXT.search(url.split("?")[0]):
+            continue
         all_params = []
         for b in ("query", "form", "js", "openapi", "runtime"):
             all_params += ep.get("params", {}).get(b, [])
@@ -3398,6 +3683,7 @@ def classify_idor_candidates(store: Store):
 
 def score_injection_candidates(store: Store):
     for ep in store.endpoints.values():
+        if not _is_confirmed(ep): continue   # speculative — skip
         all_params = []
         for b in ("query", "form", "js", "openapi", "runtime"):
             all_params += ep.get("params", {}).get(b, [])
@@ -3465,6 +3751,8 @@ class Spider:
 
     def is_valid(self, url):
         try:
+            # Normalize backslashes before validation
+            url = url.replace(chr(92)+chr(92), "/").replace(chr(92), "/")
             p = urlparse(url)
         except Exception:
             return False
@@ -3628,6 +3916,7 @@ class Spider:
                 Extractor.js_params(tag.string, url, self.store, self.emit)
                 Extractor.secrets(tag.string, url, self.store, self.emit)
                 Extractor.js_comments(tag.string, url, self.store, self.emit)
+                Extractor.js_routes(tag.string, url, self.store, self.emit)
         for form in soup.find_all("form"):
             action = form.get("action") or url
             full   = urljoin(url, action)
@@ -3834,6 +4123,7 @@ class Spider:
         Extractor.js_endpoints(text, url, self.store, self.emit)
         Extractor.js_params(text, url, self.store, self.emit)
         Extractor.js_comments(text, url, self.store, self.emit)
+        Extractor.js_routes(text, url, self.store, self.emit)
         await self._check_sourcemap(session, url)
         for m in re.finditer(r'import\s*\(\s*["\']([^"\']+)["\']', text):
             full = urljoin(url, m.group(1))
@@ -3862,6 +4152,24 @@ class Spider:
         
         # Record status early
         self.store.record_status(url, 'GET', s)
+
+        # ── Vary header param discovery ───────────────────────────────
+        # Vary: X-API-Version, X-User-Type reveals hidden endpoint dimensions
+        # Each non-standard Vary value is a param that changes the response
+        _vary = hdrs.get("Vary","") or hdrs.get("vary","")
+        if _vary:
+            _SKIP_VARY = {"accept","accept-encoding","accept-language",
+                          "origin","cookie","authorization","content-type","*"}
+            _vary_params = [v.strip() for v in _vary.split(",")
+                            if v.strip().lower() not in _SKIP_VARY]
+            if _vary_params:
+                _vk = self.store._key(url, "GET")
+                if _vk in self.store.endpoints:
+                    _vep = self.store.endpoints[_vk]
+                    for _vp in _vary_params:
+                        if _vp not in _vep["params"].get("runtime",[]):
+                            _vep["params"].setdefault("runtime",[]).append(_vp)
+                            self.emit.info(f"[Vary-Param] {_vp} ← {url}")
 
         # ── Cookie param extraction ────────────────────────────────────
         # Set-Cookie header names are injectable params for session manipulation.
@@ -3943,6 +4251,32 @@ class Spider:
                             self.store.add_endpoint(full, source='JSON_Path', score=Conf.LOW)
                             if not self._over_budget(depth + 1):
                                 self._discover_url(full, depth + 1, 'JSON_Path', show_feed=True)
+                # HATEOAS/_links/href extraction — HAL, JSON:API, Siren APIs
+                try:
+                    _jd = json.loads(body)
+                    _q  = [_jd]; _seen_nodes = 0
+                    while _q and _seen_nodes < 300:
+                        _node = _q.pop(); _seen_nodes += 1
+                        if isinstance(_node, dict):
+                            for _k, _v in _node.items():
+                                if _k.lower() in ("href","url","uri","endpoint","action",
+                                                   "link","location","src","self",
+                                                   "next","prev","previous","first","last"):
+                                    _t = str(_v) if _v else ""
+                                    if _t.startswith(("/","http")):
+                                        _f = urljoin(url, _t)
+                                        if self.is_valid(_f):
+                                            if self.store.add_endpoint(_f, source="JSON_HATEOAS", score=Conf.MEDIUM):
+                                                self.emit.info(f"[HATEOAS] {_k}: {_f}")
+                                                self._discover_url(_f, depth+1, "JSON_HATEOAS", show_feed=True)
+                                elif isinstance(_v, (dict, list)):
+                                    _q.append(_v)
+                        elif isinstance(_node, list):
+                            for _i in _node[:10]:
+                                if isinstance(_i, (dict, list)):
+                                    _q.append(_i)
+                except Exception:
+                    pass
                 # ── JSON response ID chaining ─────────────────────────
                 # Extract top-level keys that look like ID/reference fields.
                 # e.g. {"user_id": 123, "post_id": 456, "session_token": "abc"}
@@ -4052,6 +4386,12 @@ class Spider:
                             _ct = (_h or {}).get("content-type", "").lower()
                             if Extractor.is_real_file(_ct, _t, None) and not Extractor.is_soft_404(_t, _s):
                                 await robots.parse_sitemap(_smap_url)
+
+                # Subdomain enumeration via crt.sh
+                self.emit.animator.update(0, "Recon Subdomains")
+                _subenum = SubdomainEnumerator(self.target, self.store,
+                                               self.queue, self.emit, self.is_valid)
+                await _subenum.run()
 
                 # Wayback Machine — historical URL discovery
                 self.emit.animator.update(0, "Recon Wayback")
@@ -4294,6 +4634,12 @@ def _do_run(target: str, cfg: Config, emit,
         spider = Spider(target, cfg, emit, cookies, extra_headers)
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        if cfg.har_file:
+            from pathlib import Path as _P
+            if _P(cfg.har_file).exists():
+                HARImporter(cfg.har_file, spider.store, emit, spider.is_valid, target).run()
+            else:
+                emit.warn(f"[HAR] File not found: {cfg.har_file}")
         asyncio.run(spider.run())
     except KeyboardInterrupt:
         emit.warn("Scan interrupted — partial results follow")
@@ -4403,6 +4749,8 @@ def _build_parser() -> argparse.ArgumentParser:
     util = p.add_argument_group(f"{C.CY}Utilities{C.RST}")
     util.add_argument("--diff",    "-D", type=str, default=None, metavar="OLD_REPORT",
                       help="Diff this scan against an old JSON report")
+    util.add_argument("--har", "-H", type=str, default=None, metavar="HAR_FILE",
+                      help="Import a browser HAR session file to seed the store with auth-gated requests")
     util.add_argument("--upgrade",       action="store_true",
                       help="Upgrade Hellhound-Spider to the latest version")
 
@@ -4479,6 +4827,7 @@ def main():
         enable_cors     = not args.no_cors,
         enable_graphql  = not args.no_graphql,
         enable_openapi      = not args.no_openapi,
+        har_file            = getattr(args, "har", None),
         enable_noise_filter = not args.no_filter,
         enable_extraction   = args.extract,
         enable_screenshots = args.screenshot is not None,
