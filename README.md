@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.0-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.5-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -53,24 +53,43 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.0 — Surgical Intelligence Release
+## v13.5 — Orbital Recon Release
 
-v13.0 establishes the Spider as a high-fidelity surgical recon engine. This major release focuses on hardened discovery accuracy, advanced bot-bypass mechanisms, and optimized telemetry for downstream agents.
+v13.5 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing — on top of the surgical accuracy hardened in v13.0.
 
-**Enhanced Accuracy** — Deep heuristic analysis now ensures near-zero false positives on complex, dynamic SPAs. The extraction engine has been hardened to handle erratic DOM structures and obfuscated JS routes with surgical precision.
+### New in v13.5
 
-**Hardening** — Integrated bot-bypass logic, cookie-sync stabilization, and source-map resolution fixes ensure reliable discovery even on hardened enterprise targets.
+**Patchright Bot-Bypass** — When a target's WAF or bot-detection blocks Playwright, Spider automatically falls back to [Patchright](https://github.com/nicegist/patchright) — a binary-patched Chromium engine that bypasses fingerprint checks at the browser level. Zero config: detection and fallback happen transparently.
 
-**Noise Filter** — Repository browser paths (`/blob/`, `/tree/`, `/commits/`, etc.), CDN artefacts, and structural UI links are now detected and suppressed before they ever enter the endpoint store. The real API surface is no longer buried in 80+ GitHub viewer fake-endpoints.
+**Response Header Analysis** — Every response is now audited for missing and misconfigured security headers. The terminal shows a dedicated `HEADER ANALYSIS` section with `[MISSING]` / `[PRESENT]` / `[LEAK]` tags for: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Permissions-Policy`, `Referrer-Policy`, `Cache-Control`. Information leak headers (`Server`, `X-Powered-By`, `X-AspNet-Version`) are flagged and extracted automatically.
 
+**crt.sh Subdomain Enumeration** — Certificate Transparency log mining via crt.sh discovers sibling subdomains for the target. Results are shown in a dedicated `CRT.SH SUBDOMAINS` section and included in the JSON report for downstream tooling.
 
-**JS Orphan Params** — Parameters found in JS files that can't be resolved to a real API endpoint are stored separately as `js_orphan_params` — labelled as wordlist hints, never as injectable targets. The terminal shows them in a dedicated section with a red warning so they can't be confused for real attack surface.
+**Wayback Machine Integration** — Historical endpoint discovery via the Wayback CDX API. Archived URLs from the target's history are pulled, deduplicated, and merged into the crawl store — surfacing forgotten endpoints, legacy APIs, and dead routes that still respond.
 
-**Form Field Intelligence** — Every form field now carries rich metadata: `type`, `hidden`, `file`, `required`. Hidden CSRF tokens are flagged `[hidden]` in the param map. File inputs are flagged `[file]`. Downstream agents can skip CSRF tokens and prioritise real injectable fields without any guesswork.
+**Sitemap.xml Deep Parse** — Full recursive sitemap parsing including sitemap index files. Discovered URLs are merged with the crawl store and shown in a dedicated `SITEMAP` section.
 
-**Robots Tree** — The ROBOTS DISALLOWED section now shows all child endpoints found under each disallowed path as a tree. First 5 shown inline, overflow shown as `[+N more — see JSON report]`.
+**Robots.txt Allow/Disallow Tree** — The ROBOTS section now displays full Allow and Disallow trees with child endpoint mapping. Comment-mined sensitive paths are flagged with `[Robots-Leak]`.
 
-**Shorthand Flags** — Every flag now has a short single-letter alias. `-d`, `-c`, `-t`, `-v`, `-C`, `-a`, `-o`, `-f`, `-x`, `-s`, `-D` — full list below.
+**security.txt Parser (RFC 9116)** — Full-field extraction from `/.well-known/security.txt`: Contact, Expires, Encryption, Acknowledgments, Preferred-Languages, Canonical, Policy, and Hiring fields. Comments are mined for sensitive metadata.
+
+**HAR File Import** — Seed the crawl with a browser-exported HAR file (`--har session.har`). Every request in the HAR is parsed and injected into the crawl store before spidering begins — perfect for authenticated flows captured in DevTools.
+
+**HTML Comment Leak Detection** — HTML comments (`<!-- ... -->`) are now extracted, deduplicated across pages, and surfaced as `[Comment-Leak]` intelligence. TODO markers, debug flags, internal URLs, and developer notes are captured automatically.
+
+**WebSocket / Socket.io Detection** — WebSocket and socket.io endpoints are detected and separated from the HTTP attack surface in a dedicated `websocket_endpoints` section.
+
+### Carried from v13.0
+
+**Enhanced Accuracy** — Near-zero false positives on complex SPAs. Hardened extraction for erratic DOM structures and obfuscated JS routes.
+
+**Noise Filter** — Repository browser paths (`/blob/`, `/tree/`, `/commits/`), CDN artefacts, and structural UI links are suppressed before entering the endpoint store.
+
+**JS Orphan Params** — Parameters found in JS files without a resolvable target URL are stored as `js_orphan_params` — wordlist hints, not injectable targets.
+
+**Form Field Intelligence** — Rich per-field metadata: `type`, `hidden`, `file`, `required`. Downstream agents can skip CSRF tokens and prioritise real injectable fields.
+
+**Shorthand Flags** — Every flag has a short single-letter alias. `-d`, `-c`, `-t`, `-v`, `-C`, `-a`, `-o`, `-f`, `-x`, `-s`, `-D` — full list below.
 
 
 ---
@@ -159,6 +178,7 @@ spider <target> [options]
 | `--extract` | `-x` | Enable passive data extraction (emails, IPs, buckets) |
 | `--screenshot` | `-s` | Capture screenshots. Preset: `all`, `standard`, `blocked`, `errors`, `api`, `admin`, or custom regex |
 | `--no-filter` | `-F` | Disable noise path filter (include repo-browser and CDN paths) |
+| `--har` | | Seed crawl from a browser-exported HAR file |
 
 ### Utilities
 
@@ -207,6 +227,12 @@ spider https://target.com -I -v
 
 # Disable noise filter to see everything (including CDN/repo paths)
 spider https://target.com -F
+
+# Seed crawl with a HAR file (authenticated session replay)
+spider https://target.com --har session.har
+
+# Combine HAR seed + extraction + screenshots
+spider https://target.com --har session.har -x -s all
 ```
 
 ---
@@ -215,7 +241,7 @@ spider https://target.com -F
 
 ### Discovery Vectors
 
-HTML crawl, live SPA XHR interception, Intelligent Robots Analysis (Disallow/Allow mapping + Comment Mining), sitemap XML, `.well-known` (OIDC/JWKS), JSON path chaining, SPA hash routes, lazy-load attributes, CSP header hints, OpenAPI/Swagger specs, GraphQL introspection.
+HTML crawl, live SPA XHR interception, Intelligent Robots Analysis (Disallow/Allow mapping + Comment Mining), sitemap XML (with index recursion), `.well-known` (OIDC/JWKS), JSON path chaining, SPA hash routes, lazy-load attributes, CSP header hints, OpenAPI/Swagger specs, GraphQL introspection, **crt.sh certificate transparency**, **Wayback Machine CDX API**, **security.txt (RFC 9116)**, **HAR file import**, **HTML comment mining**, **response header analysis**.
 
 ### Parameter Mining
 
@@ -237,6 +263,11 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `[IP]` | Internal RFC1918 IP addresses leaked in content |
 | `[CloudBucket]` | S3, Google Storage, or Azure Blob storage references |
 | `[DB-Error]` | Database error strings leaking architectural details |
+| `[Header-Missing]` | Critical security headers absent from responses (CSP, HSTS, X-Frame-Options, etc.) |
+| `[Header-Leak]` | Server identity or technology leaked via response headers |
+| `[Comment-Leak]` | Sensitive developer comments in HTML (TODO, debug, internal URLs) |
+| `[CRT-Sub]` | Sibling subdomains discovered via certificate transparency logs |
+| `[Wayback]` | Historical endpoints recovered from the Wayback Machine |
 
 ### Intelligence Classification
 
@@ -257,6 +288,13 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `js_orphan_params` | Params found in JS files with no resolvable target URL — wordlist hints only, not injectable targets |
 | `websocket_endpoints` | socket.io / WS endpoints separated from HTTP attack surface |
 | `robots_disallowed` | Disallowed paths with discovered child endpoints shown as a tree |
+| `robots_allowed` | Explicitly allowed paths with child endpoint mapping |
+| `header_analysis` | Per-header security audit with missing/present/leak status |
+| `crtsh_subdomains` | Subdomains discovered via certificate transparency logs |
+| `wayback_urls` | Historical URLs recovered from the Wayback Machine CDX API |
+| `sitemap_urls` | URLs discovered from sitemap.xml / sitemap index files |
+| `security_txt` | Parsed fields from RFC 9116 security.txt |
+| `html_comments` | Deduplicated HTML comments extracted across pages |
 
 ---
 
@@ -274,6 +312,7 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 - Python 3.10+
 - `aiohttp`, `beautifulsoup4`, `lxml`
 - Playwright + Chromium *(optional, for SPA targets)*
+- Patchright *(optional, automatic bot-bypass fallback when WAF blocks Playwright)*
 
 ---
 

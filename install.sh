@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-#  Hellhound Spider — Installer (v13.0)
+#  Hellhound Spider — Installer (v13.5)
 #  Installs the `spider` command with an isolated virtual environment.
 # ─────────────────────────────────────────────────────────────────────
 
@@ -149,6 +149,35 @@ if [[ "$INSTALL_PLAYWRIGHT" =~ ^[Yy]$ ]]; then
     fi
     
     success "Playwright + Chromium + Dependencies installed"
+fi
+
+# ── Optional: Patchright (Bot-Bypass Fallback) ──────────────────────────────────
+INSTALL_PATCHRIGHT="n"
+if [ "$NON_INTERACTIVE" = true ]; then
+    if "$VENV_PYTHON" -c "import patchright" &>/dev/null; then
+        INSTALL_PATCHRIGHT="y"
+        info "Patchright detected in venv — updating..."
+    else
+        warn "Non-interactive mode: skipping Patchright installation"
+    fi
+else
+    echo ""
+    echo -e "  ${CYN}Patchright${RST} is a binary-level bot-bypass engine."
+    echo -e "  When the target has WAF/bot protection, Spider automatically"
+    echo -e "  falls back to Patchright to bypass challenges.\n"
+    read -r -p "  Install Patchright for bot-bypass support? [y/N] " INSTALL_PATCHRIGHT
+    echo ""
+fi
+
+if [[ "$INSTALL_PATCHRIGHT" =~ ^[Yy]$ ]]; then
+    stop_animation
+    info "Deploying Patchright bypass engine..."
+    "$VENV_PYTHON" -m pip install --quiet --upgrade patchright
+
+    info "Fetching Patchright Chromium..."
+    "$VENV_PYTHON" -m patchright install chromium 2>&1 | grep --line-buffered -vE "BEWARE|fallback" || true
+
+    success "Patchright + Chromium installed (bot-bypass ready)"
 fi
 
 # ── Install the spider command ─────────────────────────────────────────────────

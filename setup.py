@@ -2,8 +2,8 @@ from setuptools import setup
 
 setup(
     name="hellhound-spider",
-    version="13.0",
-    description="Fast async web crawler for security testing",
+    version="13.5",
+    description="Autonomous web crawler and recon engine for security testing — SPA + Non-SPA crawling, header analysis, subdomain enumeration, and intelligence classification",
     author="Sree Danush S",
     author_email="lazzer@gmail.com",
     url="https://github.com/project-hellhound-org/hellhound-spider",
@@ -15,7 +15,11 @@ setup(
         "lxml>=5.0.0",
     ],
     extras_require={
-        "spa": ["playwright>=1.40.0", "playwright-stealth>=1.0.6"],
+        "spa": [
+            "playwright>=1.40.0",
+            "playwright-stealth>=1.0.6",
+            "patchright>=0.5.0",
+        ],
     },
     entry_points={
         "console_scripts": [
@@ -29,4 +33,3 @@ setup(
         "Operating System :: OS Independent",
     ],
 )
-

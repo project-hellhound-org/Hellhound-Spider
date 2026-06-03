@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-  HELLHOUND SPIDER  v12.5  —  Standalone Recon Engine
+  HELLHOUND SPIDER  v13.5  —  Standalone Recon Engine
 
   Full SPA + Non-SPA Crawler | robots.txt | sitemap.xml | JS Analysis
 
 Dependencies:
   pip install aiohttp beautifulsoup4 lxml
-  pip install playwright && playwright install chromium     # optional SPA
+  pip install patchright && patchright install chromium   # optional SPA (recommended — undetectable)
+  pip install playwright && playwright install chromium     # optional SPA (fallback)
 """
 
 import argparse
@@ -33,6 +34,14 @@ from urllib.parse import urlparse, urljoin, parse_qs, urlencode, urlunparse
 import aiohttp
 from bs4 import BeautifulSoup, Comment
 
+# ── Browser engines ────────────────────────────────────────────────────────
+# playwright  — default engine, used for all scans
+# patchright  — fallback engine, only activated when bot/WAF detection is confirmed
+#               on the live page. Drop-in replacement, no API changes needed.
+PLAYWRIGHT_AVAILABLE  = False
+PLAYWRIGHT_ERROR      = None
+PATCHRIGHT_AVAILABLE  = False   # True if patchright is installed (available as fallback)
+
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_AVAILABLE = True
@@ -44,11 +53,18 @@ except Exception as e:
     PLAYWRIGHT_AVAILABLE = False
     PLAYWRIGHT_ERROR     = f"{type(e).__name__}: {e}"
 
+# Check patchright availability separately — import kept lazy (only used on demand)
+try:
+    import importlib.util as _ilu
+    PATCHRIGHT_AVAILABLE = _ilu.find_spec("patchright") is not None
+except Exception:
+    PATCHRIGHT_AVAILABLE = False
+
 # ══════════════════════════════════════════════════════════════════════
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "12.5"
+VERSION      = "13.5"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -544,6 +560,45 @@ def print_results(intel: dict, target: str, elapsed: float,
         p1, p2, p3 = phase_times if (phase_times and len(phase_times)==3) else (elapsed*0.10, elapsed*0.70, elapsed*0.20)
         print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Total {C.G}{elapsed:.1f}s{C.RST}")
 
+    # ── target response headers ───────────────────────────────────────
+    resp_headers = intel.get("target_response_headers", {})
+    # Security-relevant headers to flag (missing or misconfigured)
+    _SEC_HEADERS = {
+        "strict-transport-security", "content-security-policy",
+        "x-frame-options", "x-content-type-options",
+        "referrer-policy", "permissions-policy",
+        "access-control-allow-origin",
+    }
+    _INFO_HEADERS = {
+        "server", "x-powered-by", "x-aspnet-version",
+        "x-aspnetmvc-version", "x-generator",
+    }
+    if resp_headers:
+        emit.section(f"RESPONSE HEADERS  ({target})", orbital=True)
+        present_sec = set()
+        for hdr, val in sorted(resp_headers.items()):
+            h_lo = hdr.lower()
+            is_sec  = h_lo in _SEC_HEADERS
+            is_info = h_lo in _INFO_HEADERS
+            if nc:
+                tag = "[SEC]" if is_sec else "[LEAK]" if is_info else "     "
+                print(f"  {tag}  {hdr}: {val}")
+            else:
+                if is_info:
+                    # Server/framework disclosure — highlight as information leak
+                    print(f"  {C.BG_RED} LEAK {C.RST} {C.R}{hdr}{C.RST}{C.GR}:{C.RST} {C.Y}{val}{C.RST}")
+                elif is_sec:
+                    present_sec.add(h_lo)
+                    print(f"  {C.G}●{C.RST} {C.G}{hdr}{C.RST}{C.GR}:{C.RST} {C.W}{val}{C.RST}")
+                else:
+                    print(f"  {C.GR}●{C.RST} {C.GR}{hdr}{C.RST}{C.GR}:{C.RST} {C.GL}{val}{C.RST}")
+        # Flag missing security headers
+        missing_sec = _SEC_HEADERS - present_sec - {"access-control-allow-origin"}
+        if missing_sec and not nc:
+            print(f"\n  {C.R}{C.B}Missing Security Headers:{C.RST}")
+            for mh in sorted(missing_sec):
+                print(f"  {C.R}✖{C.RST} {C.Y}{mh}{C.RST}")
+
     # ── security findings ─────────────────────────────────────────────
     secrets    = intel.get("secrets", [])
     cors       = intel.get("cors_issues", [])
@@ -825,7 +880,7 @@ def print_results(intel: dict, target: str, elapsed: float,
     # ── robots disallowed ─────────────────────────────────────────────
     robots = intel.get("robots_disallowed", [])
     if robots:
-        emit.section(f"ROBOTS DISALLOWED  ({len(robots)} paths)", orbital=True)
+        emit.section(f"ROBOTS.TXT DISALLOWED  ({len(robots)} paths)", orbital=True)
         all_ep_urls = [e.get("url","") for e in eps]
         parsed_target = intel.get("meta",{}).get("target","")
         for path in robots:
@@ -845,6 +900,79 @@ def print_results(intel: dict, target: str, elapsed: float,
                     print(f"       └─ {child_url}")
                 else:
                     print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
+
+    # ── robots allowed ────────────────────────────────────────────────
+    robots_allowed = intel.get("robots_allowed", [])
+    if robots_allowed:
+        emit.section(f"ROBOTS.TXT ALLOWED  ({len(robots_allowed)} paths)", orbital=True)
+        for path in robots_allowed:
+            # If the allow path is "/" it means everything is permitted — no child list needed
+            # (listing all crawled URLs under "/" is misleading since it covers the whole site)
+            if path.strip() == "/":
+                if nc:
+                    print(f"  [Allow]  {path}  (entire site explicitly allowed)")
+                else:
+                    print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}  {C.GR}(entire site explicitly allowed){C.RST}")
+            else:
+                if nc:
+                    print(f"  [Allow]  {path}")
+                else:
+                    print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}")
+                # Show crawled endpoints specifically under this non-root allow path
+                all_ep_urls = [e.get("url","") for e in eps]
+                parsed_target = intel.get("meta",{}).get("target","")
+                seen = set()
+                children = []
+                for u in all_ep_urls:
+                    if not u or u == parsed_target or u in seen:
+                        continue
+                    if ("/" + path.lstrip("/")) in urlparse(u).path:
+                        seen.add(u)
+                        children.append(u)
+                for child_url in sorted(children):
+                    if nc:
+                        print(f"       └─ {child_url}")
+                    else:
+                        print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
+
+    # ── sitemap.xml endpoints ─────────────────────────────────────────
+    sitemap_eps = [e for e in eps if "Sitemap" in e.get("source", [])]
+    if sitemap_eps:
+        emit.section(f"SITEMAP ENDPOINTS  ({len(sitemap_eps)} found)", orbital=True)
+        for ep in sorted(sitemap_eps, key=lambda e: e.get("url","")):
+            url = ep.get("url","")
+            conf = ep.get("confidence","LOW")
+            if nc:
+                print(f"  [Sitemap] {conf:<12}  {url}")
+            else:
+                cc = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(conf, C.GR)
+                print(f"  {C.CY}●{C.RST} {cc}{conf:<12}{C.RST} {C.W}{url}{C.RST}")
+
+    # ── wayback machine URLs ──────────────────────────────────────────
+    wayback_eps = [e for e in eps if "Wayback" in e.get("source", [])]
+    if wayback_eps:
+        emit.section(f"WAYBACK URLS  ({len(wayback_eps)} archived endpoints)", orbital=True)
+        for ep in sorted(wayback_eps, key=lambda e: e.get("url","")):
+            url = ep.get("url","")
+            conf = ep.get("confidence","LOW")
+            if nc:
+                print(f"  [Wayback] {conf:<12}  {url}")
+            else:
+                cc = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(conf, C.GR)
+                print(f"  {C.MG}●{C.RST} {cc}{conf:<12}{C.RST} {C.W}{url}{C.RST}")
+
+    # ── crt.sh subdomains ─────────────────────────────────────────────
+    crt_eps = [e for e in eps if "CRT_Subdomain" in e.get("source", [])]
+    if crt_eps:
+        emit.section(f"CRT.SH SUBDOMAINS  ({len(crt_eps)} discovered)", orbital=True)
+        for ep in sorted(crt_eps, key=lambda e: e.get("url","")):
+            url = ep.get("url","")
+            conf = ep.get("confidence","LOW")
+            if nc:
+                print(f"  [CRT.sh]  {conf:<12}  {url}")
+            else:
+                cc = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(conf, C.GR)
+                print(f"  {C.BL}●{C.RST} {cc}{conf:<12}{C.RST} {C.W}{url}{C.RST}")
 
     # ── intelligence summary — candidates and classifications ────────────
     s_admin   = s.get("admin_panels", 0)
@@ -911,12 +1039,13 @@ def print_results(intel: dict, target: str, elapsed: float,
     comments = intel.get("comments", [])
     if comments:
         # Comments stored as {"content": text, "source": url}
-        # Only show genuinely sensitive comments — not every HTML comment
+        # Sensitive keyword filter — widened to include URL/path references and framework leaks
         _SENSITIVE_KW = re.compile(
             r'(?:password|passwd|secret|token|api[_-]?key|internal|'
             r'prod(?:uction)?|staging|admin|backup|credential|'
             r'todo[:\s]+remove|fixme|do\s+not\s+commit|debug[_-]?mode|'
-            r'hack|bypass|hardcod)',
+            r'hack|bypass|hardcod|framework|version|temporary|temp|'
+            r'beta|new-home|homepage|@\s*/[a-z]|https?://)',
             re.I
         )
         _sensitive_comments = [
@@ -924,16 +1053,47 @@ def print_results(intel: dict, target: str, elapsed: float,
             if _SENSITIVE_KW.search(str(c.get("content","") or ""))
         ]
         if _sensitive_comments:
-            emit.section(f"HTML COMMENT LEAKS  ({len(_sensitive_comments)} sensitive)", orbital=True)
+            # Deduplicate near-identical comments that differ only in a timing/numeric value
+            # e.g. 10x "Page Generated in 0.0XXX Seconds using the THM Framework..."
+            # Strategy: normalise all floating-point numbers to "N" and deduplicate on that key,
+            # keeping the FIRST occurrence (and its source URL) as the representative entry.
+            # All other sources that share the same normalised content are listed as alt-sources.
+            _norm_re = re.compile(r'\b\d+\.\d+\b')
+            seen_norm: dict = {}   # normalised_key -> {"content": full_text, "sources": [url,...]}
             for c in _sensitive_comments:
-                content = str(c.get("content","") or c.get("text","") or c)[:120]
-                source  = str(c.get("url","") or c.get("source",""))
-                if nc:
-                    print(f"  [Comment] {content}  ← {source}")
+                full = str(c.get("content","") or c.get("text","") or c)
+                # Prefer all_sources list (multi-page dedup) over single source field
+                raw_sources = c.get("all_sources") or ([c.get("source","")] if c.get("source") else [])
+                src  = str(c.get("url","") or c.get("source",""))
+                key  = _norm_re.sub("N", full)
+                if key not in seen_norm:
+                    seen_norm[key] = {"content": full, "sources": list(dict.fromkeys(s for s in raw_sources if s))}
                 else:
-                    print(f"  {C.R}●{C.RST} {C.Y}{content}{C.RST}")
-                    if source:
-                        print(f"  {C.GR}    └─{C.RST} {C.GR}{source}{C.RST}")
+                    for s in raw_sources:
+                        if s and s not in seen_norm[key]["sources"]:
+                            seen_norm[key]["sources"].append(s)
+
+            deduped = list(seen_norm.values())
+            emit.section(f"HTML COMMENT LEAKS  ({len(deduped)} unique)", orbital=True)
+            for entry in deduped:
+                full_content = entry["content"]
+                sources = entry["sources"]
+                # Print full comment — wrap long lines at 120 chars for readability
+                if nc:
+                    print(f"  [Comment] {full_content}")
+                    for src in sources:
+                        print(f"       └─ {src}")
+                else:
+                    # Multi-line comments: print each line indented
+                    lines = full_content.splitlines()
+                    if len(lines) == 1:
+                        print(f"  {C.R}●{C.RST} {C.Y}{full_content}{C.RST}")
+                    else:
+                        print(f"  {C.R}●{C.RST} {C.Y}{lines[0]}{C.RST}")
+                        for ln in lines[1:]:
+                            print(f"    {C.Y}{ln}{C.RST}")
+                    for src in sources:
+                        print(f"  {C.GR}    └─{C.RST} {C.GR}{src}{C.RST}")
 
     # ── tech stack ────────────────────────────────────────────────────
     tech_list = intel.get("tech_stack", [])
@@ -1268,6 +1428,8 @@ class Store:
         self.secrets:      List[dict]       = []
         self.tech_stack:   Set[str]         = set()
         self.robots_paths: List[str]        = []
+        self.robots_allowed_paths: List[str] = []
+        self.target_response_headers: dict   = {}
         self.cors_issues:  List[dict]       = []
         self.graphql:      List[dict]       = []
         self.openapi:      List[dict]       = []
@@ -1577,9 +1739,15 @@ class Store:
 
     def add_comment(self, content, source_url):
         content = content.strip()
-        if len(content) < 4 or any(c["content"] == content for c in self.comments):
+        if len(content) < 4:
             return False
-        self.comments.append({"content": content, "source": source_url})
+        # If exact content already stored, just add this URL as an additional source
+        for c in self.comments:
+            if c["content"] == content:
+                if source_url and source_url not in c.get("all_sources", [c.get("source","")]):
+                    c.setdefault("all_sources", [c.get("source","")]).append(source_url)
+                return False  # not a new unique comment
+        self.comments.append({"content": content, "source": source_url, "all_sources": [source_url]})
         return True
 
     def add_secret(self, val, stype, source_url):
@@ -1625,6 +1793,7 @@ class Store:
             "cmdi_candidates":    sum(1 for e in eps if e.get("cmdi_candidate")),
             "extracted_data":     len(self.extracted_data),
             "robots_disallowed":  len(self.robots_paths),
+            "robots_allowed":     len(self.robots_allowed_paths),
             "screenshots":        sum(1 for e in eps if e.get("screenshot")),
             # JS orphan params — params discovered in JS files with no resolved endpoint
             "js_orphan_param_files": len(self.js_orphan_params),
@@ -1684,6 +1853,8 @@ class Store:
             "graphql": self.graphql, "openapi": self.openapi,
             "sourcemaps": self.sourcemaps, "comments": self.comments,
             "robots_disallowed": self.robots_paths,
+            "robots_allowed": self.robots_allowed_paths,
+            "target_response_headers": self.target_response_headers,
             "tech_stack": sorted(self.tech_stack),
             "extracted_data": self.extracted_data if self.extracted_data is not None else [],
             # JS params that could not be attributed to a specific endpoint URL.
@@ -2330,15 +2501,20 @@ class Extractor:
         # comments (e.g. "<!-- api handler -->", "<!-- for testing -->") to be signal.
         kw = {"todo","fixme","bug","admin","hidden","secret","debug","config",
               "key","password","cred","token","hack","temp","internal",
-              "private","disabled","endpoint"}
+              "private","disabled","endpoint","framework","version","beta",
+              "homepage","temporary","new-home","http://","https://"}
         for c in soup.find_all(string=lambda t: isinstance(t, Comment)):
             txt = c.strip()
             if len(txt) < 4:
                 continue
-            if (any(k in txt.lower() for k in kw)
+            # Match keyword list OR a path/URL reference anywhere in the comment
+            has_kw   = any(k in txt.lower() for k in kw)
+            has_path = bool(re.search(r'(?:^|\s)/[a-z0-9_\-]{3,}', txt, re.I))
+            has_url  = bool(re.search(r'https?://', txt, re.I))
+            if (has_kw or has_path or has_url
                     or bool(re.match(r'^[/\.][a-z0-9_\-\.#]{3,}', txt))):
                 if store.add_comment(txt, url):
-                    emit.info(f"[Comment] {txt[:100]}")
+                    emit.info(f"[Comment] {txt[:120]}")
                     # IMPROVEMENT 3: Run patterns on comments
                     for pat, dtype in cls._EXTRACTION_PATTERNS:
                         if dtype in ('Email', 'Phone'):
@@ -2684,6 +2860,8 @@ class SubdomainEnumerator:
                     self.store.add_endpoint(candidate, source="CRT_Subdomain", score=1)
                     self.queue.put_nowait((candidate + "/", 1, "CRT_Subdomain"))
                     added += 1
+                # Live feed: show each subdomain as it's found (mirrors robots.txt tree style)
+                self.emit.robots_entry("CRT.sh", sub, True)
 
         self.emit.always_info(
             f"[CRT.sh] {len(seen)} unique subdomain(s) found — {added} queued")
@@ -2714,7 +2892,7 @@ class WaybackProbe:
             )
             try:
                 import aiohttp as _aio
-                async with _aio.ClientSession(timeout=_aio.ClientTimeout(total=12)) as _ws:
+                async with _aio.ClientSession(timeout=_aio.ClientTimeout(total=30)) as _ws:
                     async with _ws.get(self.CDX_API + params) as _wr:
                         s = _wr.status
                         text = await _wr.text() if s == 200 else ""
@@ -2734,6 +2912,8 @@ class WaybackProbe:
                     self.store.add_endpoint(u, source="Wayback", score=Conf.LOW)
                     self.queue.put_nowait((u, 2, "Wayback"))
                     queued += 1
+                    # Live feed: show each wayback URL as it's queued (mirrors robots.txt tree style)
+                    self.emit.robots_entry("Wayback", urlparse(u).path or u, True)
             self.emit.always_info(
                 f"[Wayback] {len(urls)} historical URLs found — "
                 f"{queued} same-domain queued for crawl"
@@ -2861,6 +3041,7 @@ class RobotsParser:
                     full = urljoin(self.base_url, path)
                     if self.is_valid(full):
                         self.store.add_endpoint(full, source="Robots_Allow", score=Conf.LOW)
+                        self.store.robots_allowed_paths.append(path)
                         queued = path != "/"
                         if queued:
                             self.queue.put_nowait((full, 1, "Robots_Allow"))
@@ -2924,15 +3105,20 @@ class RobotsParser:
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
         for loc in (root.findall("sm:sitemap/sm:loc", ns) or root.findall("sitemap/loc")):
             if loc.text: await self.parse_sitemap(loc.text.strip())
-        count = 0
+        sitemap_entries = []
         for loc in (root.findall("sm:url/sm:loc", ns) or root.findall("url/loc")):
             u = (loc.text or "").strip()
             if u and self.is_valid(u):
                 self.store.add_endpoint(u, source="Sitemap", score=Conf.LOW)
                 self.queue.put_nowait((u, 1, "Sitemap"))
-                count += 1
-        if count:
-            self.emit.always_info(f"[Sitemap] {sitemap_url} → {count} URLs queued")
+                sitemap_entries.append(u)
+        if sitemap_entries:
+            # Print summary line FIRST, then tree entries below it
+            self.emit.always_info(f"[Sitemap] {sitemap_url} → {len(sitemap_entries)} URLs queued")
+            for u in sitemap_entries:
+                parsed_u = urlparse(u)
+                disp = parsed_u.path + ("?" + parsed_u.query if parsed_u.query else "")
+                self.emit.robots_entry("Sitemap", disp or u, True)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3165,7 +3351,7 @@ class SPAScanner:
                 self.emit.warn("[Screenshot] Playwright not available — skipping screenshots")
             self.emit.info("[SPA] Playwright not installed — skipping")
             return None
-        self.emit.always_info("[SPA] Launching headless Chromium…")
+        self.emit.always_info("[SPA] Launching headless Chromium via Playwright…")
         try:
             self._pw = await async_playwright().start()
             browser = await self._pw.chromium.launch(headless=True, args=[
@@ -3218,24 +3404,25 @@ class SPAScanner:
                 delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
             """
             await context.add_init_script(_STEALTH_JS)
+            # ── Stealth layer: playwright-stealth (JS patches) or manual JS ────
             _stealth_fn = None
             try:
                 from playwright_stealth import stealth_async as _sa  # type: ignore
                 _stealth_fn = _sa
-                self.emit.always_info("[SPA] playwright-stealth loaded — deep WAF evasion ready")
+                self.emit.always_info("[SPA] Stealth: playwright-stealth active")
             except ImportError:
-                self.emit.always_info("[SPA] Manual stealth active (pip install playwright-stealth for full WAF coverage)")
+                # Manual JS patches injected via add_init_script above are the fallback.
+                # No noisy install prompt during a live scan.
+                self.emit.info("[SPA] Stealth: manual JS patches active")
             except Exception as _sle:
                 self.emit.warn(f"[SPA] playwright-stealth load error: {_sle}")
             await context.route(
                 re.compile(r'\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|mp4|mp3)(\?.*)?$'),
                 lambda route, _: asyncio.create_task(route.abort()))
             page = await context.new_page()
-            # Apply playwright-stealth per-page (2.x API requires page not context)
             if _stealth_fn:
                 try:
                     await _stealth_fn(page)
-                    self.emit.always_info("[SPA] playwright-stealth active — WAF evasion on")
                 except Exception as _se:
                     self.emit.warn(f"[SPA] stealth apply failed: {_se}")
 
@@ -3346,6 +3533,70 @@ class SPAScanner:
                 await page.goto(self.target_url, wait_until="networkidle", timeout=20000)
             except Exception as e:
                 self.emit.info(f"[SPA] Goto warning: {e}")
+
+            # ── Bot detection check + patchright fallback ───────────────────
+            # After the page loads, check if we hit a WAF/bot challenge.
+            # If detected → close playwright, relaunch with patchright and retry.
+            try:
+                _page_body = await page.content()
+                if Extractor.is_bot_blocked(_page_body):
+                    self.emit.warn("[SPA] Bot/WAF challenge detected with Playwright")
+                    if PATCHRIGHT_AVAILABLE:
+                        self.emit.always_info("[SPA] Retrying with Patchright (binary-level bypass)…")
+                        # Clean up current playwright session
+                        try:
+                            await browser.close()
+                            await self._pw.stop()
+                        except Exception:
+                            pass
+                        # Relaunch with patchright
+                        try:
+                            from patchright.async_api import async_playwright as _pr_ap  # type: ignore
+                            self._pw = await _pr_ap().start()
+                            browser = await self._pw.chromium.launch(headless=True, args=[
+                                "--no-sandbox",
+                                "--disable-dev-shm-usage",
+                                "--disable-infobars",
+                                "--disable-extensions",
+                                "--no-first-run",
+                                "--no-default-browser-check",
+                                "--disable-default-apps",
+                            ])
+                            context = await browser.new_context(**ctx_args)
+                            await context.add_init_script(_STEALTH_JS)
+                            await context.route(
+                                re.compile(r'\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|mp4|mp3)(\?.*)?$'),
+                                lambda route, _: asyncio.create_task(route.abort()))
+                            page = await context.new_page()
+                            page.on("request", on_request)
+                            page.on("response", on_response)
+                            try:
+                                await page.goto(self.target_url, wait_until="networkidle", timeout=20000)
+                            except Exception as _pr_e:
+                                self.emit.info(f"[SPA] Patchright goto warning: {_pr_e}")
+                            # Check again — if still blocked, custom fingerprinting
+                            _page_body2 = await page.content()
+                            if Extractor.is_bot_blocked(_page_body2):
+                                self.emit.warn(
+                                    "[SPA] Bot challenge persists even with Patchright — "
+                                    "target uses custom fingerprinting. Results may be incomplete.")
+                                self.store.add_secret(
+                                    f"WAF/bot challenge persists at {self.target_url} (patchright active)",
+                                    "WAF_Bot_Challenge", self.target_url)
+                            else:
+                                self.emit.always_success("[SPA] Patchright bypass successful — bot challenge cleared")
+                        except Exception as _pr_err:
+                            self.emit.warn(f"[SPA] Patchright relaunch failed: {_pr_err}")
+                    else:
+                        self.emit.warn(
+                            "[SPA] No patchright fallback available — "
+                            "pip install patchright && patchright install chromium")
+                        self.store.add_secret(
+                            f"WAF/bot challenge detected at {self.target_url}",
+                            "WAF_Bot_Challenge", self.target_url)
+            except Exception:
+                pass
+
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(1.5)
@@ -4363,11 +4614,20 @@ class Spider:
         async with aiohttp.ClientSession(headers=req_headers, cookies=self.cookies,
                                           timeout=timeout, connector=connector) as session:
             try:
-                # Start persistent status animator
+                # Capture target response headers for the summary report
                 _t_phase_start = time.time()
                 _t_recon = 0.0
                 _t_crawl = 0.0
                 _t_audit = 0.0
+                try:
+                    _hdr_s, _hdr_h, _ = await fetch(session, "GET", self.target, self.rl)
+                    if _hdr_h:
+                        # Store a clean, sorted dict of headers (normalise to Title-Case)
+                        self.store.target_response_headers = {
+                            k: v for k, v in sorted(_hdr_h.items())
+                        }
+                except Exception:
+                    pass
                 self.emit.animator.start_anim("Recon Probing Base")
                 if self.cfg.enable_graphql:
                     await probe_graphql(session, self.target, self.store, self.emit, self.rl)
@@ -4728,7 +4988,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     flags = p.add_argument_group(f"{C.CY}Feature Flags{C.RST}")
     flags.add_argument("--no-playwright", "-P", action="store_true",
-                       help="Disable headless browser SPA scanning")
+                       help="Disable headless browser SPA scanning (patchright > playwright-stealth > manual JS)")
     flags.add_argument("--no-probing",    "-p", action="store_true",
                        help="Disable intelligent probing phase")
     flags.add_argument("--spa-interact",  "-I", action="store_true",
@@ -4789,11 +5049,17 @@ def main():
     _pf("Depth",       str(args.depth))
     _pf("Concurrency", str(args.concurrency))
     _pf("Timeout",     f"{args.timeout}s")
-    pw_status = "enabled" if (not args.no_playwright and PLAYWRIGHT_AVAILABLE) else "disabled"
-    if pw_status == "disabled" and PLAYWRIGHT_ERROR and args.verbose:
-        pw_status += f"  {C.R}({PLAYWRIGHT_ERROR}){C.RST}"
-    
-    _pf("Playwright", pw_status,
+    if not args.no_playwright and PLAYWRIGHT_AVAILABLE:
+        if PATCHRIGHT_AVAILABLE:
+            pw_status = "playwright  (+patchright available as bot-bypass fallback)"
+        else:
+            pw_status = "playwright  (install patchright for bot-bypass fallback)"
+    else:
+        pw_status = "disabled"
+        if PLAYWRIGHT_ERROR and args.verbose:
+            pw_status += f"  {C.R}({PLAYWRIGHT_ERROR}){C.RST}"
+
+    _pf("Browser Engine", pw_status,
         C.G if (not args.no_playwright and PLAYWRIGHT_AVAILABLE) else C.GR)
     _pf("Verbose",
         "on" if args.verbose else "off",
