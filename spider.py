@@ -2827,22 +2827,46 @@ class SubdomainEnumerator:
     async def run(self):
         from urllib.parse import urlparse as _up
         parsed     = _up(self.base_url)
-        domain     = parsed.netloc.split(":")[0].lstrip("www.")
+        _host      = parsed.netloc.split(":")[0].lower()
+        domain     = _host[4:] if _host.startswith("www.") else _host
         scheme     = parsed.scheme
         self.emit.always_info(f"[CRT.sh] Enumerating subdomains for {domain}")
+        _HEADERS = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept":          "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection":      "keep-alive",
+        }
+        data = None
         try:
             import aiohttp as _aio
             async with _aio.ClientSession(
-                timeout=_aio.ClientTimeout(total=15),
-                headers={"User-Agent": "Mozilla/5.0"}
+                timeout=_aio.ClientTimeout(total=20),
+                headers=_HEADERS,
             ) as sess:
-                async with sess.get(self.CRT_SH.format(domain=f"%.{domain}")) as resp:
-                    if resp.status != 200:
-                        self.emit.warn(f"[CRT.sh] No results (status {resp.status})")
-                        return
-                    data = await resp.json(content_type=None)
+                # Retry up to 3 times — crt.sh occasionally returns 503 under load
+                for _attempt in range(3):
+                    async with sess.get(self.CRT_SH.format(domain=f"%.{domain}")) as resp:
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                            break
+                        elif resp.status == 429:
+                            # Genuine rate-limit (rare) — back off and retry
+                            self.emit.warn(f"[CRT.sh] Rate-limited — waiting 5s (attempt {_attempt+1}/3)")
+                            await asyncio.sleep(5 * (_attempt + 1))
+                        elif resp.status in (503, 502):
+                            await asyncio.sleep(2)
+                        else:
+                            self.emit.warn(f"[CRT.sh] Unexpected status {resp.status}")
+                            return
         except Exception as e:
             self.emit.warn(f"[CRT.sh] Error: {e}")
+            return
+        if data is None:
+            self.emit.warn("[CRT.sh] No data returned after retries")
             return
 
         seen  = set()
@@ -3535,21 +3559,16 @@ class SPAScanner:
                 self.emit.info(f"[SPA] Goto warning: {e}")
 
             # ── Bot detection check + patchright fallback ───────────────────
-            # After the page loads, check if we hit a WAF/bot challenge.
-            # If detected → close playwright, relaunch with patchright and retry.
             try:
                 _page_body = await page.content()
                 if Extractor.is_bot_blocked(_page_body):
-                    self.emit.warn("[SPA] Bot/WAF challenge detected with Playwright")
+                    self.emit.warn("[SPA] Bot/WAF challenge detected — falling back to Patchright")
                     if PATCHRIGHT_AVAILABLE:
-                        self.emit.always_info("[SPA] Retrying with Patchright (binary-level bypass)…")
-                        # Clean up current playwright session
                         try:
                             await browser.close()
                             await self._pw.stop()
                         except Exception:
                             pass
-                        # Relaunch with patchright
                         try:
                             from patchright.async_api import async_playwright as _pr_ap  # type: ignore
                             self._pw = await _pr_ap().start()
@@ -3574,23 +3593,18 @@ class SPAScanner:
                                 await page.goto(self.target_url, wait_until="networkidle", timeout=20000)
                             except Exception as _pr_e:
                                 self.emit.info(f"[SPA] Patchright goto warning: {_pr_e}")
-                            # Check again — if still blocked, custom fingerprinting
                             _page_body2 = await page.content()
                             if Extractor.is_bot_blocked(_page_body2):
-                                self.emit.warn(
-                                    "[SPA] Bot challenge persists even with Patchright — "
-                                    "target uses custom fingerprinting. Results may be incomplete.")
+                                self.emit.warn("[SPA] Bot challenge persists — target uses custom fingerprinting")
                                 self.store.add_secret(
-                                    f"WAF/bot challenge persists at {self.target_url} (patchright active)",
+                                    f"WAF/bot challenge persists at {self.target_url}",
                                     "WAF_Bot_Challenge", self.target_url)
                             else:
-                                self.emit.always_success("[SPA] Patchright bypass successful — bot challenge cleared")
+                                self.emit.always_success("[SPA] Patchright bypass successful")
                         except Exception as _pr_err:
                             self.emit.warn(f"[SPA] Patchright relaunch failed: {_pr_err}")
                     else:
-                        self.emit.warn(
-                            "[SPA] No patchright fallback available — "
-                            "pip install patchright && patchright install chromium")
+                        self.emit.warn("[SPA] Bot challenge detected — no fallback engine, continuing with partial results")
                         self.store.add_secret(
                             f"WAF/bot challenge detected at {self.target_url}",
                             "WAF_Bot_Challenge", self.target_url)
@@ -5053,7 +5067,7 @@ def main():
         if PATCHRIGHT_AVAILABLE:
             pw_status = "playwright  (+patchright available as bot-bypass fallback)"
         else:
-            pw_status = "playwright  (install patchright for bot-bypass fallback)"
+            pw_status = "playwright  (bot-bypass fallback: patchright not detected)"
     else:
         pw_status = "disabled"
         if PLAYWRIGHT_ERROR and args.verbose:

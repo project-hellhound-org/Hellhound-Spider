@@ -25,7 +25,7 @@ start_animation() {
     local label="$1"
     stop_animation
     
-    # Ultra-Wide Animator matching spider.py v13.0 spec
+    # Ultra-Wide Animator matching spider.py v13.5 spec
     python3 -c "
 import math, time, sys
 label = \"$label\"
