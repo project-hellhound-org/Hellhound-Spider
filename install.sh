@@ -151,25 +151,9 @@ if [[ "$INSTALL_PLAYWRIGHT" =~ ^[Yy]$ ]]; then
     success "Playwright + Chromium + Dependencies installed"
 fi
 
-# ── Optional: Patchright (Bot-Bypass Fallback) ──────────────────────────────────
-INSTALL_PATCHRIGHT="n"
-if [ "$NON_INTERACTIVE" = true ]; then
-    if "$VENV_PYTHON" -c "import patchright" &>/dev/null; then
-        INSTALL_PATCHRIGHT="y"
-        info "Patchright detected in venv — updating..."
-    else
-        warn "Non-interactive mode: skipping Patchright installation"
-    fi
-else
-    echo ""
-    echo -e "  ${CYN}Patchright${RST} is a binary-level bot-bypass engine."
-    echo -e "  When the target has WAF/bot protection, Spider automatically"
-    echo -e "  falls back to Patchright to bypass challenges.\n"
-    read -r -p "  Install Patchright for bot-bypass support? [y/N] " INSTALL_PATCHRIGHT
-    echo ""
-fi
-
-if [[ "$INSTALL_PATCHRIGHT" =~ ^[Yy]$ ]]; then
+# ── Patchright (Bot-Bypass Fallback) ──────────────────────────────────
+# Automatically deploy Patchright if Playwright is installed, as it's the required WAF fallback.
+if [[ "$INSTALL_PLAYWRIGHT" =~ ^[Yy]$ ]]; then
     stop_animation
     info "Deploying Patchright bypass engine..."
     "$VENV_PYTHON" -m pip install --quiet --upgrade patchright
