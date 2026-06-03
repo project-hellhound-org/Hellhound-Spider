@@ -2863,7 +2863,7 @@ class SubdomainEnumerator:
                             self.emit.warn(f"[CRT.sh] Unexpected status {resp.status}")
                             return
         except Exception as e:
-            self.emit.warn(f"[CRT.sh] Error: {e}")
+            self.emit.warn(f"[CRT.sh] Error: {type(e).__name__} {e}")
             return
         if data is None:
             self.emit.warn("[CRT.sh] No data returned after retries")
@@ -2943,7 +2943,7 @@ class WaybackProbe:
                 f"{queued} same-domain queued for crawl"
             )
         except Exception as e:
-            self.emit.warn(f"[Wayback] Error: {e}")
+            self.emit.warn(f"[Wayback] Error: {type(e).__name__} {e}")
 
 class RobotsParser:
     def __init__(self, session, base_url, store, queue, emit, rl, is_valid_fn):
@@ -3643,7 +3643,7 @@ class SPAScanner:
             self.emit.always_info("[SPA] Dynamic analysis complete")
             return cookie_dict
         except Exception as e:
-            self.emit.warn(f"[SPA] Error: {e}")
+            self.emit.warn(f"[SPA] Error: {type(e).__name__} {e}")
             return None
 
     async def _interact(self, page):
@@ -5146,7 +5146,7 @@ def main():
                 for ep in diff["removed"]:
                     emit.finding("GONE", "INFO", ep["url"])
         except Exception as e:
-            emit.warn(f"[Diff] Error: {e}")
+            emit.warn(f"[Diff] Error: {type(e).__name__} {e}")
 
 
 if __name__ == "__main__":
