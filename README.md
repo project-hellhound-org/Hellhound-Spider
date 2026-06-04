@@ -79,6 +79,10 @@ v13.5 transforms the Spider from a crawler into a multi-vector recon platform. T
 
 **WebSocket / Socket.io Detection** — WebSocket and socket.io endpoints are detected and separated from the HTTP attack surface in a dedicated `websocket_endpoints` section.
 
+**Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, and WAF/CDN fingerprinting.
+**JS Software Composition Analysis (SCA)** — Analyzes JavaScript files to extract dependencies and their versions.
+**Active Probing** — Automatically probes for exposed sensitive files, admin panels, and verifies if discovered Cloud Buckets are publicly accessible.
+
 ### Carried from v13.0
 
 **Enhanced Accuracy** — Near-zero false positives on complex SPAs. Hardened extraction for erratic DOM structures and obfuscated JS routes.
@@ -149,6 +153,7 @@ spider <target> [options]
 | `--depth` | `-d` | `4` | Maximum crawl depth |
 | `--concurrency` | `-c` | `12` | Concurrent async workers |
 | `--timeout` | `-t` | `15` | Per-request timeout in seconds |
+| `--delay` | | `0` | Delay between requests in seconds |
 | `--verbose` | `-v` | off | Show all discovery logs |
 
 ### Authentication
@@ -163,7 +168,7 @@ spider <target> [options]
 | Flag | Short | Default | Description |
 |---|---|---|---|
 | `--out` | `-o` | auto-named | Output file path |
-| `--format` | `-f` | `json` | `json` `jsonl` `csv` `burp` |
+| `--format` | `-f` | `json` | `json` `jsonl` `csv` `burp` `urls` `nuclei` |
 
 ### Feature Flags
 
@@ -241,7 +246,7 @@ spider https://target.com --har session.har -x -s all
 
 ### Discovery Vectors
 
-HTML crawl, live SPA XHR interception, Intelligent Robots Analysis (Disallow/Allow mapping + Comment Mining), sitemap XML (with index recursion), `.well-known` (OIDC/JWKS), JSON path chaining, SPA hash routes, lazy-load attributes, CSP header hints, OpenAPI/Swagger specs, GraphQL introspection, **crt.sh certificate transparency**, **Wayback Machine CDX API**, **security.txt (RFC 9116)**, **HAR file import**, **HTML comment mining**, **response header analysis**.
+HTML crawl, live SPA XHR interception, Intelligent Robots Analysis (Disallow/Allow mapping + Comment Mining), sitemap XML (with index recursion), `.well-known` (OIDC/JWKS), JSON path chaining, SPA hash routes, lazy-load attributes, CSP header hints, OpenAPI/Swagger specs, GraphQL introspection, **crt.sh certificate transparency**, **Wayback Machine CDX API**, **security.txt (RFC 9116)**, **HAR file import**, **HTML comment mining**, **response header analysis**, **TLS/DNS Intel**, **WAF fingerprinting**, and **JS SCA Analysis**.
 
 ### Parameter Mining
 
@@ -268,6 +273,10 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `[Comment-Leak]` | Sensitive developer comments in HTML (TODO, debug, internal URLs) |
 | `[CRT-Sub]` | Sibling subdomains discovered via certificate transparency logs |
 | `[Wayback]` | Historical endpoints recovered from the Wayback Machine |
+| `[TLS-Intel]` | Certificate CNs, SANs, and issuer metadata |
+| `[WAF-Detected]` | WAF or CDN technology fingerprinted via headers and cookies |
+| `[DNS-Intel]` | Discovered TXT, CNAME, and A records |
+| `[JS-SCA]` | JavaScript software composition and dependency versions |
 
 ### Intelligence Classification
 
@@ -295,6 +304,12 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `sitemap_urls` | URLs discovered from sitemap.xml / sitemap index files |
 | `security_txt` | Parsed fields from RFC 9116 security.txt |
 | `html_comments` | Deduplicated HTML comments extracted across pages |
+| `tls_intelligence` | TLS certificate metadata and SANs |
+| `waf_detection` | WAF/CDN fingerprinting results |
+| `dns_intelligence` | Discovered DNS records |
+| `js_sca_analysis` | JS dependency tree |
+| `active_probing` | Discovered admin panels and sensitive files |
+| `cloud_bucket_verification` | Status of discovered cloud buckets |
 
 ---
 
@@ -304,6 +319,8 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 - **Burp** — XML format for direct import into Burp Suite.
 - **CSV** — Spreadsheet-ready endpoint and parameter list.
 - **JSONL** — One endpoint per line for streaming pipelines.
+- **URLs** — Raw newline-separated list of discovered URLs.
+- **Nuclei** — Target list formatted for direct piping into Nuclei.
 
 ---
 
