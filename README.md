@@ -79,9 +79,8 @@ v13.5 transforms the Spider from a crawler into a multi-vector recon platform. T
 
 **WebSocket / Socket.io Detection** — WebSocket and socket.io endpoints are detected and separated from the HTTP attack surface in a dedicated `websocket_endpoints` section.
 
-**Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, and WAF/CDN fingerprinting.
-**JS Software Composition Analysis (SCA)** — Analyzes JavaScript files to extract dependencies and their versions.
-**Active Probing** — Automatically probes for exposed sensitive files, admin panels, and verifies if discovered Cloud Buckets are publicly accessible.
+**Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, WAF/CDN fingerprinting, active JS SCA (Software Composition Analysis), and cloud bucket verification.
+**Active Probing** — Automatically probes for exposed sensitive files and admin panels.
 
 ### Carried from v13.0
 
@@ -273,8 +272,8 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `[Comment-Leak]` | Sensitive developer comments in HTML (TODO, debug, internal URLs) |
 | `[CRT-Sub]` | Sibling subdomains discovered via certificate transparency logs |
 | `[Wayback]` | Historical endpoints recovered from the Wayback Machine |
-| `[TLS-Intel]` | Certificate CNs, SANs, and issuer metadata |
-| `[WAF-Detected]` | WAF or CDN technology fingerprinted via headers and cookies |
+| `[TLS-Intel]` | Certificate expiry, weak protocols, and self-signed issues |
+| `[WAF-Detected]` | Active WAF or CDN technology fingerprinted via headers and cookies |
 | `[DNS-Intel]` | Discovered TXT, CNAME, and A records |
 | `[JS-SCA]` | JavaScript software composition and dependency versions |
 
@@ -298,18 +297,18 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 | `websocket_endpoints` | socket.io / WS endpoints separated from HTTP attack surface |
 | `robots_disallowed` | Disallowed paths with discovered child endpoints shown as a tree |
 | `robots_allowed` | Explicitly allowed paths with child endpoint mapping |
-| `header_analysis` | Per-header security audit with missing/present/leak status |
-| `crtsh_subdomains` | Subdomains discovered via certificate transparency logs |
+| `header_audit` | Per-header security audit with missing/present/leak status |
+| `crt_subdomains` | Subdomains discovered via certificate transparency logs |
 | `wayback_urls` | Historical URLs recovered from the Wayback Machine CDX API |
 | `sitemap_urls` | URLs discovered from sitemap.xml / sitemap index files |
 | `security_txt` | Parsed fields from RFC 9116 security.txt |
 | `html_comments` | Deduplicated HTML comments extracted across pages |
-| `tls_intelligence` | TLS certificate metadata and SANs |
-| `waf_detection` | WAF/CDN fingerprinting results |
-| `dns_intelligence` | Discovered DNS records |
-| `js_sca_analysis` | JS dependency tree |
-| `active_probing` | Discovered admin panels and sensitive files |
-| `cloud_bucket_verification` | Status of discovered cloud buckets |
+| `tls_findings` | TLS certificate issues (expiry, weak protocols, self-signed) |
+| `waf_findings` | WAF/CDN fingerprinting results |
+| `dns_findings` | Discovered DNS records |
+| `js_libs` | JS dependency tree |
+| `sensitive_files` | Discovered sensitive files and configurations |
+| `cloud_probes` | Status of discovered cloud buckets |
 
 ---
 
