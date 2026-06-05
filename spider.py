@@ -994,21 +994,27 @@ def print_results(intel: dict, target: str, elapsed: float,
                 print(f"  {C.BL}●{C.RST} {C.W}{hostname:<40}{C.RST} {C.GR}{url}{C.RST}")
 
     # ── intelligence summary — candidates and classifications ────────────
-    s_admin   = s.get("admin_panels", 0)
-    s_idor    = s.get("idor_candidates", 0)
-    s_sqli    = s.get("sqli_candidates", 0)
-    s_cmdi    = s.get("cmdi_candidates", 0)
-    s_ssrf    = s.get("ssrf_candidates", 0)
-    s_upload  = s.get("upload_endpoints", 0)
-    s_auth_ep = s.get("auth_endpoints", 0)
+    s_admin    = s.get("admin_panels", 0)
+    s_idor     = s.get("idor_candidates", 0)
+    s_sqli     = s.get("sqli_candidates", 0)
+    s_cmdi     = s.get("cmdi_candidates", 0)
+    s_ssrf     = s.get("ssrf_candidates", 0)
+    s_upload   = s.get("upload_endpoints", 0)
+    s_auth_ep  = s.get("auth_endpoints", 0)
+    s_unauth   = s.get("unauthenticated_apis", 0)
+    s_sensdata = s.get("sensitive_data_sources", 0)
+    s_legacy   = s.get("legacy_endpoints", 0)
     intel_items = [
-        (s_admin,   "Admin Panel(s)",        C.R),
-        (s_idor,    "IDOR Candidate(s)",     C.Y),
-        (s_sqli,    "SQLi Candidate(s)",     C.O),
-        (s_cmdi,    "CMDi Candidate(s)",     C.R),
-        (s_ssrf,    "SSRF Candidate(s)",     C.O),
-        (s_upload,  "File Upload(s)",        C.CY),
-        (s_auth_ep, "Auth Endpoint(s)",      C.MG),
+        (s_admin,    "Admin Panel(s)",           C.R),
+        (s_idor,     "IDOR Candidate(s)",        C.Y),
+        (s_sqli,     "SQLi Candidate(s)",        C.O),
+        (s_cmdi,     "CMDi Candidate(s)",        C.R),
+        (s_ssrf,     "SSRF Candidate(s)",        C.O),
+        (s_upload,   "File Upload(s)",           C.CY),
+        (s_auth_ep,  "Auth Endpoint(s)",         C.MG),
+        (s_unauth,   "Unauth API(s)",            C.R),
+        (s_sensdata, "Sensitive Data Source(s)", C.O),
+        (s_legacy,   "Legacy/Deprecated(s)",     C.Y),
     ]
     # Filter: JS/CSS/font/image files are never real classified endpoints
     _ASSET_EXT = re.compile(
@@ -1037,6 +1043,12 @@ def print_results(intel: dict, target: str, elapsed: float,
                     tagged = [e for e in real_eps if e.get("file_upload_candidate") and _not_asset(e)]
                 elif label == "Auth Endpoint(s)":
                     tagged = [e for e in real_eps if e.get("auth_classification") and _not_asset(e)]
+                elif label == "Unauth API(s)":
+                    tagged = [e for e in real_eps if e.get("unauthenticated_api") and _not_asset(e)]
+                elif label == "Sensitive Data Source(s)":
+                    tagged = [e for e in real_eps if e.get("sensitive_data_source") and _not_asset(e)]
+                elif label == "Legacy/Deprecated(s)":
+                    tagged = [e for e in real_eps if e.get("legacy_endpoint") and _not_asset(e)]
                 else:
                     tagged = []
                 count = len(tagged)
@@ -2053,13 +2065,16 @@ class Store:
 
             # Priority scoring
             score = 0
-            if ep.get("cmdi_candidate"):   score += 40
-            if ep.get("sqli_candidate"):   score += 35
-            if ssrf_cand:                  score += 25
-            if ep.get("idor_candidate"):   score += 20
+            if ep.get("cmdi_candidate"):        score += 40
+            if ep.get("sqli_candidate"):        score += 35
+            if ssrf_cand:                       score += 25
+            if ep.get("idor_candidate"):        score += 20
             if ep.get("file_upload_candidate"): score += 15
-            if conf == "CONFIRMED":        score += 10
-            if ep.get("auth_required"):    score += 5
+            if ep.get("unauthenticated_api"):   score += 18  # ASM gold
+            if ep.get("sensitive_data_source"): score += 16  # data exposure risk
+            if ep.get("legacy_endpoint"):       score += 12  # known attack surface
+            if conf == "CONFIRMED":             score += 10
+            if ep.get("auth_required"):         score += 5
             score += min(len(all_params) * 3, 15)
 
             # Pull observed_values from raw endpoint if available
@@ -2085,6 +2100,11 @@ class Store:
                 "ssrf_candidate":        ssrf_cand,
                 "ssrf_params":           ssrf_params,
                 "observed_values":       obs_val,
+                "unauthenticated_api":   ep.get("unauthenticated_api", False),
+                "sensitive_data_source": ep.get("sensitive_data_source", False),
+                "sensitive_signals":     ep.get("sensitive_signals", []),
+                "legacy_endpoint":       ep.get("legacy_endpoint", False),
+                "legacy_reason":         ep.get("legacy_reason", ""),
                 "priority_score":        score,
                 "source":                ep.get("source", []),
             })
@@ -2133,6 +2153,10 @@ class Store:
             "sensitive_files_found":  len(self.sensitive_files),
             "js_vulnerable_libs":     len(self.js_libs),
             "cloud_bucket_issues":    len(self.cloud_probes),
+            # ── ASM-complete counts (v13.6) ──────────────────────────────
+            "unauthenticated_apis":   sum(1 for e in eps if e.get("unauthenticated_api")),
+            "sensitive_data_sources": sum(1 for e in eps if e.get("sensitive_data_source")),
+            "legacy_endpoints":       sum(1 for e in eps if e.get("legacy_endpoint")),
         }
         
         # FIX 1 & 2: Format endpoints for export
@@ -2181,6 +2205,15 @@ class Store:
                 # observed_values: actual ID values seen during crawl (SPA response mining)
                 # e.g. {"user_id": ["123","456"]} — use for IDOR probe seeding
                 "observed_values": {k: v for k, v in e.get("observed_values", {}).items() if v},
+                # ── ASM-complete classifications (v13.6) ───────────────────
+                # unauthenticated_api: /api/ or /wp-json/ returning 200 without creds
+                "unauthenticated_api":  e.get("unauthenticated_api", False),
+                # sensitive_data_source: endpoint is a data exposure risk (not just injectable)
+                "sensitive_data_source": e.get("sensitive_data_source", False),
+                "sensitive_signals":     e.get("sensitive_signals", []),
+                # legacy_endpoint: known dangerous path OR Wayback zombie still alive
+                "legacy_endpoint":  e.get("legacy_endpoint", False),
+                "legacy_reason":    e.get("legacy_reason", ""),
             })
 
         data = {
@@ -4393,6 +4426,170 @@ _ADMIN_DIAG_EXCLUDE = re.compile(
     re.I
 )
 
+# ══════════════════════════════════════════════════════════════════════
+# ASM CLASSIFIERS (v13.6) — three missing ASM-complete labels
+# ══════════════════════════════════════════════════════════════════════
+
+# API paths that are meaningful — /api/, /wp-json/, /rest/, /v1/, /graphql/ etc.
+# Exclude generic static/infra paths that happen to sit under /api/ namespace.
+_UNAUTH_API_RE = re.compile(
+    r'^/(?:api|rest|wp-json|graphql|gql|v[0-9]+|backend|service|rpc|data|internal)'
+    r'(?:/[^?#]*)?$',
+    re.I
+)
+_UNAUTH_API_EXCLUDE = re.compile(
+    r'/(?:_next|__webpack|static|assets|public|images?|fonts?|icons?|favicon'
+    r'|manifest|sw\.js|robots|sitemap|healthz|health|ping|metrics)(?:/|$|\?)',
+    re.I
+)
+
+def classify_unauthenticated_api(store: Store):
+    """
+    Flag API endpoints that respond 200 without any auth credentials.
+
+    Rule: path matches _UNAUTH_API_RE + observed status 200 + auth_required=False.
+    auth_required is set to True only when the spider saw 401/403. If it saw 200
+    without any cookie/header auth in the session, the endpoint is unauthenticated.
+
+    This is pure ASM gold — exposed API surfaces are the highest-value scan output.
+    Sets ep["unauthenticated_api"] = True.
+    """
+    for ep in store.endpoints.values():
+        if not _is_confirmed(ep):
+            continue
+        url   = ep["url"]
+        path  = urlparse(url).path
+        if not _UNAUTH_API_RE.match(path):
+            continue
+        if _UNAUTH_API_EXCLUDE.search(path):
+            continue
+        if _STATIC_EXT.search(path):
+            continue
+        # Must have seen a real 200 response — not just speculative
+        obs = ep.get("observed_status", [])
+        if 200 not in obs:
+            continue
+        # Must NOT be behind an auth wall (spider saw 401/403 at some point)
+        if ep.get("auth_required", False):
+            continue
+        ep["unauthenticated_api"] = True
+
+
+# Patterns in response bodies / endpoint metadata indicating PII or key exposure.
+# The spider already detects raw secret strings (AWS keys, JWTs etc.) — this is
+# different: classifying the *endpoint itself* as a sensitive data source based on
+# what it returned or what its path/params suggest it returns.
+_SENSITIVE_RESP_KEYS = re.compile(
+    r'(?:password|passwd|secret|api_?key|access_?token|refresh_?token|private_?key|'
+    r'credit_?card|card_?number|cvv|ssn|social_?security|date_?of_?birth|dob|'
+    r'phone_?number|email_?address|home_?address|bank_?account|iban|passport|'
+    r'driver_?license|national_?id|tax_?id|auth_?token|session_?token|bearer)',
+    re.I
+)
+_SENSITIVE_PATH_RE = re.compile(
+    r'/(?:export|download|dump|backup|users?|accounts?|profile|me|self|'
+    r'customers?|employees?|patients?|records?|pii|gdpr|personal|private|'
+    r'credentials?|keys?|secrets?|tokens?|config|configuration|settings|env|'
+    r'\.env|debug|diagnostics?|internal)(?:/|$|\?|\.)',
+    re.I
+)
+
+def classify_sensitive_data_sources(store: Store):
+    """
+    Classify endpoints as sensitive data sources — distinct from raw secret detection.
+
+    Three signals used in order of certainty:
+      1. endpoint has secrets linked to it in store.secrets (strongest — confirmed exposure)
+      2. path matches _SENSITIVE_PATH_RE (structural — path implies data it serves)
+      3. observed_values contains PII-like keys (weaker — inferred from JSON response mining)
+
+    Sets ep["sensitive_data_source"] = True and ep["sensitive_signals"] = [...].
+    Agents use this to prioritise data-extraction probes over injection probes.
+    """
+    # Build a fast lookup: which URLs had secrets found in their response?
+    urls_with_secrets: set = set()
+    for sec in store.secrets:
+        src = sec.get("source", "")
+        if src:
+            urls_with_secrets.add(normalize(src))
+
+    for ep in store.endpoints.values():
+        if not _is_confirmed(ep):
+            continue
+        url     = ep["url"]
+        path    = urlparse(url).path
+        signals = []
+
+        # Signal 1: this URL's response already had a secret extracted
+        if normalize(url) in urls_with_secrets:
+            signals.append("confirmed_secret_in_response")
+
+        # Signal 2: path structurally implies sensitive data
+        if _SENSITIVE_PATH_RE.search(path):
+            signals.append("sensitive_path_pattern")
+
+        # Signal 3: JSON response mining returned PII-like key names
+        obs_vals = ep.get("observed_values", {})
+        pii_keys = [k for k in obs_vals if _SENSITIVE_RESP_KEYS.search(k)]
+        if pii_keys:
+            signals.append(f"pii_keys_in_response:{','.join(pii_keys[:5])}")
+
+        if signals:
+            ep["sensitive_data_source"] = True
+            ep["sensitive_signals"]     = signals
+
+
+# Known legacy/high-risk paths — these are attack vectors in themselves even if
+# not injectable. Wayback-sourced URLs that still respond are the clearest signal.
+_LEGACY_PATH_RE = re.compile(
+    r'/(?:xmlrpc\.php|wp-login\.php|phpmyadmin|pma|adminer|phpinfo\.php|'
+    r'info\.php|test\.php|debug\.php|install\.php|setup\.php|upgrade\.php|'
+    r'web\.config|\.git/|\.svn/|\.env|\.htpasswd|\.htaccess|'
+    r'server-status|server-info|elmah\.axd|trace\.axd|'
+    r'api/v1(?:/|$)|api/v0(?:/|$)|v1/(?:users|admin|config)|'
+    r'cgi-bin/|fcgi-bin/|remote/|dana-na/|pulse/|'
+    r'struts/|axis/|axis2/)(?:[^?#]*)?',
+    re.I
+)
+
+def classify_legacy_endpoints(store: Store):
+    """
+    Flag deprecated or legacy endpoints — especially Wayback-sourced URLs
+    that still respond. These are high-value ASM findings even without params.
+
+    Two conditions for flagging:
+      a. Path matches _LEGACY_PATH_RE (known dangerous/legacy path)
+      b. Source includes "Wayback" AND observed status 200 (zombie endpoint)
+
+    Sets ep["legacy_endpoint"] = True and ep["legacy_reason"] = str.
+    xmlrpc.php on this scan (from the AI team's example) would be caught by
+    condition (a) alone — no Wayback needed.
+    """
+    for ep in store.endpoints.values():
+        if not _is_confirmed(ep):
+            continue
+        url     = ep["url"]
+        path    = urlparse(url).path
+        obs     = ep.get("observed_status", [])
+        sources = ep.get("source", [])
+        reason  = None
+
+        # Condition A: known dangerous legacy path that responded
+        if _LEGACY_PATH_RE.search(path):
+            if obs:  # confirmed — any real response counts
+                reason = f"legacy_known_path:{path.split('?')[0]}"
+
+        # Condition B: Wayback-sourced URL that is still alive (200)
+        # This catches *any* removed endpoint the Wayback CDX knows about
+        # that the target still serves — true zombie endpoint detection.
+        if not reason and "Wayback" in sources and 200 in obs:
+            reason = "wayback_zombie:historical_url_still_live"
+
+        if reason:
+            ep["legacy_endpoint"] = True
+            ep["legacy_reason"]   = reason
+
+
 def classify_admin_endpoints(store: Store):
     for ep in store.endpoints.values():
         if not _is_confirmed(ep): continue
@@ -6316,6 +6513,9 @@ class Spider:
 
                 # Run classification passes
                 # No network I/O — pure store operations
+                classify_unauthenticated_api(self.store)
+                classify_sensitive_data_sources(self.store)
+                classify_legacy_endpoints(self.store)
                 classify_admin_endpoints(self.store)
                 classify_auth_endpoints(self.store)
                 classify_idor_candidates(self.store)
