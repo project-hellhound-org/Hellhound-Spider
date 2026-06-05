@@ -10,10 +10,18 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.5-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.6-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
+
+---
+
+## What It Does
+
+Hellhound Spider crawls a web application and produces a complete map of every endpoint, parameter, and security surface it can reach. The output is a structured JSON report — sorted by confidence, with parameters grouped by source, ready to feed directly into attack agents or import into Burp Suite.
+
+It runs two crawl engines in parallel: async HTTP workers for speed, and headless Chromium for JavaScript-heavy SPAs. For SPAs it intercepts live XHR and fetch calls as the browser actually makes them — including POST body parameters and response IDs. When the crawl finishes, it classifies every endpoint automatically and scores injection candidates so downstream agents start with context, not cold discovery.
 
 ---
 
@@ -53,34 +61,27 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.5 — Orbital Recon Release
+## v13.6 — Orbital Recon Release
 
-v13.5 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing — on top of the surgical accuracy hardened in v13.0.
+v13.6 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing.
 
-### New in v13.5
+### New in v13.6
 
-**Patchright Bot-Bypass** — When a target's WAF or bot-detection blocks Playwright, Spider automatically falls back to [Patchright](https://github.com/nicegist/patchright) — a binary-patched Chromium engine that bypasses fingerprint checks at the browser level. Zero config: detection and fallback happen transparently.
-
-**Response Header Analysis** — Every response is now audited for missing and misconfigured security headers. The terminal shows a dedicated `HEADER ANALYSIS` section with `[MISSING]` / `[PRESENT]` / `[LEAK]` tags for: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Permissions-Policy`, `Referrer-Policy`, `Cache-Control`. Information leak headers (`Server`, `X-Powered-By`, `X-AspNet-Version`) are flagged and extracted automatically.
-
-**crt.sh Subdomain Enumeration** — Certificate Transparency log mining via crt.sh discovers sibling subdomains for the target. Results are shown in a dedicated `CRT.SH SUBDOMAINS` section and included in the JSON report for downstream tooling.
-
-**Wayback Machine Integration** — Historical endpoint discovery via the Wayback CDX API. Archived URLs from the target's history are pulled, deduplicated, and merged into the crawl store — surfacing forgotten endpoints, legacy APIs, and dead routes that still respond.
-
-**Sitemap.xml Deep Parse** — Full recursive sitemap parsing including sitemap index files. Discovered URLs are merged with the crawl store and shown in a dedicated `SITEMAP` section.
-
-**Robots.txt Allow/Disallow Tree** — The ROBOTS section now displays full Allow and Disallow trees with child endpoint mapping. Comment-mined sensitive paths are flagged with `[Robots-Leak]`.
-
-**security.txt Parser (RFC 9116)** — Full-field extraction from `/.well-known/security.txt`: Contact, Expires, Encryption, Acknowledgments, Preferred-Languages, Canonical, Policy, and Hiring fields. Comments are mined for sensitive metadata.
-
-**HAR File Import** — Seed the crawl with a browser-exported HAR file (`--har session.har`). Every request in the HAR is parsed and injected into the crawl store before spidering begins — perfect for authenticated flows captured in DevTools.
-
-**HTML Comment Leak Detection** — HTML comments (`<!-- ... -->`) are now extracted, deduplicated across pages, and surfaced as `[Comment-Leak]` intelligence. TODO markers, debug flags, internal URLs, and developer notes are captured automatically.
-
-**WebSocket / Socket.io Detection** — WebSocket and socket.io endpoints are detected and separated from the HTTP attack surface in a dedicated `websocket_endpoints` section.
-
-**Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, WAF/CDN fingerprinting, active JS SCA (Software Composition Analysis), and cloud bucket verification.
-**Active Probing** — Automatically probes for exposed sensitive files and admin panels.
+- **Patchright Bot-Bypass** — Transparently bypasses WAF/bot-detection fingerprinting.
+- **Response Header Analysis** — Audits missing and misconfigured security headers.
+- **crt.sh Subdomain Enumeration** — Discovers sibling subdomains via Certificate Transparency logs.
+- **Wayback Machine Integration** — Recovers historical endpoints via CDX API.
+- **Sitemap.xml Deep Parse** — Full recursive parsing of sitemap index files.
+- **Robots.txt Allow/Disallow Tree** — Builds endpoint mapping trees from robots directives.
+- **security.txt Parser (RFC 9116)** — Extracts contact and policy metadata.
+- **HAR File Import** — Seed crawls with authenticated browser sessions.
+- **HTML Comment Leak Detection** — Extracts and deduplicates sensitive developer comments.
+- **WebSocket Detection** — Isolates socket.io and WS endpoints.
+- **Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, WAF fingerprinting, active JS SCA, and cloud bucket verification.
+- **Active Probing** — Automatically probes for exposed sensitive files and admin panels.
+- **Notes Extraction** — Extracts and parses target notes.
+- **GraphQL Introspection** — Detects and maps GraphQL endpoints.
+- **Expanded Subdomains** — Enhanced subdomain enumeration engines.
 
 ### Carried from v13.0
 
@@ -95,13 +96,7 @@ v13.5 transforms the Spider from a crawler into a multi-vector recon platform. T
 **Shorthand Flags** — Every flag has a short single-letter alias. `-d`, `-c`, `-t`, `-v`, `-C`, `-a`, `-o`, `-f`, `-x`, `-s`, `-D` — full list below.
 
 
----
 
-## What It Does
-
-Hellhound Spider crawls a web application and produces a complete map of every endpoint, parameter, and security surface it can reach. The output is a structured JSON report — sorted by confidence, with parameters grouped by source, ready to feed directly into attack agents or import into Burp Suite.
-
-It runs two crawl engines in parallel: async HTTP workers for speed, and headless Chromium for JavaScript-heavy SPAs. For SPAs it intercepts live XHR and fetch calls as the browser actually makes them — including POST body parameters and response IDs. When the crawl finishes, it classifies every endpoint automatically and scores injection candidates so downstream agents start with context, not cold discovery.
 
 ---
 
@@ -251,64 +246,7 @@ HTML crawl, live SPA XHR interception, Intelligent Robots Analysis (Disallow/All
 
 Form fields (with type metadata: hidden, file, required), JS fetch/axios body keys, URL query strings, OpenAPI spec fields, POST body params from live browser requests, structural normalization (clustering dynamic segments).
 
-### Passive Security Detection
 
-| Signal | Description |
-|---|---|
-| `[SECRET:*]` | API keys, JWTs, Bitcoin/Ethereum addresses, private keys |
-| `[SourceMap]` | Exposed `.js.map` files leaking original source code |
-| `[Tech]` | Server/version headers (Server, X-Powered-By, X-AspNet-Version) |
-| `[CORS]` | Wildcard or reflected CORS misconfiguration |
-| `[Error-Leak]` | Verbose stack traces or DB errors in 5xx responses |
-| `[Geo-Leak]` | Latitude/longitude coordinates exposed in JSON API responses |
-| `[Auth-wall:*]` | Endpoints returning 401/403 |
-| `[Robots-Leak]` | Sensitive keywords in `robots.txt` comments |
-| `[Email]` | Email addresses found in JS/HTML content |
-| `[IP]` | Internal RFC1918 IP addresses leaked in content |
-| `[CloudBucket]` | S3, Google Storage, or Azure Blob storage references |
-| `[DB-Error]` | Database error strings leaking architectural details |
-| `[Header-Missing]` | Critical security headers absent from responses (CSP, HSTS, X-Frame-Options, etc.) |
-| `[Header-Leak]` | Server identity or technology leaked via response headers |
-| `[Comment-Leak]` | Sensitive developer comments in HTML (TODO, debug, internal URLs) |
-| `[CRT-Sub]` | Sibling subdomains discovered via certificate transparency logs |
-| `[Wayback]` | Historical endpoints recovered from the Wayback Machine |
-| `[TLS-Intel]` | Certificate expiry, weak protocols, and self-signed issues |
-| `[WAF-Detected]` | Active WAF or CDN technology fingerprinted via headers and cookies |
-| `[DNS-Intel]` | Discovered TXT, CNAME, and A records |
-| `[JS-SCA]` | JavaScript software composition and dependency versions |
-
-### Intelligence Classification
-
-| Tag | Meaning |
-|---|---|
-| `admin_panel` | Management/Administration interface detected |
-| `auth_classification` | login, logout, register, token, mfa, password_reset |
-| `idor_candidate` | Endpoints with ID-like parameters or UUIDs in the path |
-| `sqli_candidate` | Parameters prone to SQL injection (id, query, filter, sort) |
-| `cmdi_candidate` | Parameters prone to Command injection (cmd, exec, file, path) |
-| `file_upload` | Endpoints that accept file or media upload |
-| `form_fields_detail` | Per-field type metadata: hidden, file, required flags |
-
-### Special Sections in Output
-
-| Section | Description |
-|---|---|
-| `js_orphan_params` | Params found in JS files with no resolvable target URL — wordlist hints only, not injectable targets |
-| `websocket_endpoints` | socket.io / WS endpoints separated from HTTP attack surface |
-| `robots_disallowed` | Disallowed paths with discovered child endpoints shown as a tree |
-| `robots_allowed` | Explicitly allowed paths with child endpoint mapping |
-| `header_audit` | Per-header security audit with missing/present/leak status |
-| `crt_subdomains` | Subdomains discovered via certificate transparency logs |
-| `wayback_urls` | Historical URLs recovered from the Wayback Machine CDX API |
-| `sitemap_urls` | URLs discovered from sitemap.xml / sitemap index files |
-| `security_txt` | Parsed fields from RFC 9116 security.txt |
-| `html_comments` | Deduplicated HTML comments extracted across pages |
-| `tls_findings` | TLS certificate issues (expiry, weak protocols, self-signed) |
-| `waf_findings` | WAF/CDN fingerprinting results |
-| `dns_findings` | Discovered DNS records |
-| `js_libs` | JS dependency tree |
-| `sensitive_files` | Discovered sensitive files and configurations |
-| `cloud_probes` | Status of discovered cloud buckets |
 
 ---
 
