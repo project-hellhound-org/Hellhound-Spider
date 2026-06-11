@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.6-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.7-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -61,11 +61,11 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.6 — Orbital Recon Release
+## v13.7 — Orbital Recon Release
 
-v13.6 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing.
+v13.7 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing.
 
-### New in v13.6
+### New in v13.7
 
 - **Patchright Bot-Bypass** — Transparently bypasses WAF/bot-detection fingerprinting.
 - **Response Header Analysis** — Audits missing and misconfigured security headers.
@@ -147,7 +147,7 @@ spider <target> [options]
 | `--depth` | `-d` | `4` | Maximum crawl depth |
 | `--concurrency` | `-c` | `12` | Concurrent async workers |
 | `--timeout` | `-t` | `15` | Per-request timeout in seconds |
-| `--delay` | | `0` | Delay between requests in seconds |
+| `--delay` | `-W` | `0.0` | Delay between requests in seconds |
 | `--verbose` | `-v` | off | Show all discovery logs |
 
 ### Authentication
@@ -178,6 +178,14 @@ spider <target> [options]
 | `--screenshot` | `-s` | Capture screenshots. Preset: `all`, `standard`, `blocked`, `errors`, `api`, `admin`, or custom regex |
 | `--no-filter` | `-F` | Disable noise path filter (include repo-browser and CDN paths) |
 | `--har` | | Seed crawl from a browser-exported HAR file |
+
+### Scope
+
+| Flag | Short | Description |
+|---|---|---|
+| `--follow-subdomains` | `-S` | Crawl discovered subdomains within the base domain |
+| `--follow-redirects` | `-r` | Follow cross-host redirects and add destination to scope |
+| `--scope` | | Comma-separated extra hosts to include in scope |
 
 ### Utilities
 

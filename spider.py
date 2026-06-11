@@ -66,7 +66,7 @@ except Exception:
 # METADATA
 # ══════════════════════════════════════════════════════════════════════
 
-VERSION      = "13.5"
+VERSION      = "13.7"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -387,16 +387,36 @@ class Emit:
         self._w(f"{C.G}{C.B}[✓]{C.RST} {C.B}{msg}{C.RST}")
 
     def robots_entry(self, directive: str, path: str, queued: bool):
-        """Live tree-feed line per robots.txt path entry."""
+        """Live tree-feed line per entry — prints a section header when source type changes."""
+        # Detect source group from directive to print separator on first entry of each type
+        _GROUP_MAP = {
+            "DISALLOW":  "ROBOTS.TXT",
+            "ALLOW":     "ROBOTS.TXT",
+            "SITEMAP":   "SITEMAP",
+            "WAYBACK":   "WAYBACK",
+            "CRT.SH":    "CRT.SH SUBDOMAINS",
+        }
+        group = _GROUP_MAP.get(directive.upper(), directive.upper())
+        if not hasattr(self, "_last_feed_group"):
+            self._last_feed_group = None
+        if group != self._last_feed_group:
+            self._last_feed_group = group
+            if self._nc:
+                print(f"\n  ── {group} ──")
+            else:
+                self._w(f"\n  {C.CY}── {group} ──{C.RST}")
+
         if self._nc:
             status = "crawling" if queued else "skipped"
             print(f"  |  {directive:<10} {path}  [{status}]")
             return
         if directive.upper() == "DISALLOW":
             dc = C.R; icon = "✖"
+        elif directive.upper() in ("SITEMAP", "WAYBACK", "CRT.SH"):
+            dc = C.CY; icon = "↳"
         else:
             dc = C.GD; icon = "✔"
-        status = f"{C.R}crawling{C.RST}" if queued else f"{C.GR}skipped{C.RST}"
+        status = f"{C.G}crawling{C.RST}" if queued else f"{C.GR}skipped{C.RST}"
         self._w(f"  {C.GR}├─{C.RST} {dc}{icon} {directive:<10}{C.RST} {C.W}{path:<40}{C.RST}  {C.GR}↳{C.RST} {status}")
 
     def robots_comment_leak(self, comment: str):
@@ -580,9 +600,30 @@ def print_results(intel: dict, target: str, elapsed: float,
         p1, p2, p3 = phase_times if (phase_times and len(phase_times)==3) else (elapsed*0.10, elapsed*0.70, elapsed*0.20)
         print(f"  {C.CY}◔{C.RST} {C.W}Recon {C.G}{p1:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Crawl {C.G}{p2:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Audit {C.G}{p3:.1f}s{C.RST} {C.GR}·{C.RST} {C.W}Total {C.G}{elapsed:.1f}s{C.RST}")
 
-    # ── target response headers ───────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # REPORT ORDER: small/fast-read → large/detail
+    # 1  RESPONSE HEADERS        (target fingerprint)
+    # 2  SECURITY HEADERS        (header audit)
+    # 3  TLS / CERTIFICATE
+    # 4  WAF / CDN
+    # 5  TECH STACK
+    # 6  DNS INTELLIGENCE
+    # 7  CRT.SH SUBDOMAINS
+    # 8  ROBOTS.TXT
+    # 9  SITEMAP
+    # 10 WAYBACK
+    # 11 HTML COMMENT LEAKS
+    # 12 AUTH-WALLED
+    # 13 SECURITY FINDINGS       (sourcemaps, secrets, cors, graphql)
+    # 14 SENSITIVE FILES
+    # 15 VULNERABLE JS LIBRARIES
+    # 16 CLOUD STORAGE
+    # 17 EXTRACTED DATA
+    # (then big tables: ENDPOINTS, PARAM MAP, INTELLIGENCE…)
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── 1. target response headers ────────────────────────────────────
     resp_headers = intel.get("target_response_headers", {})
-    # Security-relevant headers to flag (missing or misconfigured)
     _SEC_HEADERS = {
         "strict-transport-security", "content-security-policy",
         "x-frame-options", "x-content-type-options",
@@ -605,91 +646,288 @@ def print_results(intel: dict, target: str, elapsed: float,
                 print(f"  {tag}  {hdr}: {val}")
             else:
                 if is_info:
-                    # Server/framework disclosure — highlight as information leak
                     print(f"  {C.BG_RED} LEAK {C.RST} {C.R}{hdr}{C.RST}{C.GR}:{C.RST} {C.Y}{val}{C.RST}")
                 elif is_sec:
                     present_sec.add(h_lo)
                     print(f"  {C.G}●{C.RST} {C.G}{hdr}{C.RST}{C.GR}:{C.RST} {C.W}{val}{C.RST}")
                 else:
                     print(f"  {C.GR}●{C.RST} {C.GR}{hdr}{C.RST}{C.GR}:{C.RST} {C.GL}{val}{C.RST}")
-        # Flag missing security headers
         missing_sec = _SEC_HEADERS - present_sec - {"access-control-allow-origin"}
         if missing_sec and not nc:
             print(f"\n  {C.R}{C.B}Missing Security Headers:{C.RST}")
             for mh in sorted(missing_sec):
                 print(f"  {C.R}✖{C.RST} {C.Y}{mh}{C.RST}")
 
-    # ── security findings ─────────────────────────────────────────────
-    secrets    = intel.get("secrets", [])
-    cors       = intel.get("cors_issues", [])
-    gql        = intel.get("graphql", [])
-    oas        = intel.get("openapi", [])
-    sourcemaps = intel.get("sourcemaps", [])
+    # ── 2. security headers audit ─────────────────────────────────────
+    header_issues = intel.get("header_audit", [])
+    if header_issues:
+        emit.section(f"SECURITY HEADERS  ({len(header_issues)} issue(s))", orbital=True)
+        for f in header_issues:
+            sev     = f.get("severity", "INFO")
+            sev_col = {"HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
+            if nc:
+                print(f"  [{sev}] {f.get('header','')}  {f.get('detail','')}")
+            else:
+                pill = f"{sev_col}{C.B}[{sev}]{C.RST}"
+                print(f"  {pill} {sev_col}{f.get('header',''):<32}{C.RST} {C.GR}{f.get('detail','')}{C.RST}")
 
-    if any([secrets, cors, gql, oas, sourcemaps]):
-        emit.section("SECURITY FINDINGS")
+    # ── 3. TLS / certificate ──────────────────────────────────────────
+    tls_findings = intel.get("tls_findings", [])
+    if tls_findings:
+        emit.section(f"TLS / CERTIFICATE  ({len(tls_findings)} issue(s))", orbital=True)
+        for f in tls_findings:
+            sev     = f.get("severity", "INFO")
+            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
+            if nc:
+                print(f"  [{sev}] {f.get('issue','')}  {f.get('detail','')}")
+            else:
+                pill = f"{sev_col}{C.B} {sev} {C.RST}"
+                print(f"  {pill}  {C.W}{f.get('issue','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
 
-    for item in gql:
-        emit.finding("GraphQL", "HIGH",
-                     f"Introspection OPEN — {item.get('url','')}  "
-                     f"({item.get('types_count','?')} types)")
+    # ── 4. WAF / CDN ──────────────────────────────────────────────────
+    waf_findings = intel.get("waf_findings", [])
+    if waf_findings:
+        emit.section(f"WAF / CDN  ({len(waf_findings)} detected)", orbital=True)
+        for wf in waf_findings:
+            conf_col = {"HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(wf.get("confidence",""), C.GR) if not nc else ""
+            if nc:
+                print(f"  [WAF] {wf.get('waf','')}  ({wf.get('confidence','')})")
+            else:
+                pill = f"{conf_col}{C.B}[{wf.get('confidence','?')}]{C.RST}"
+                print(f"  {C.MG}◈{C.RST} {pill} {C.W}{wf.get('waf','')}{C.RST}")
 
-    for item in oas:
-        emit.finding("OpenAPI", "MEDIUM",
-                     f"Spec exposed — {item.get('url','')}")
-
-    for item in cors:
-        sev = "HIGH" if item.get("allow_credentials") else "MEDIUM"
-        emit.finding("CORS", sev,
-                     f"{item.get('url','')}  "
-                     f"origin={item.get('reflected','')}  "
-                     f"creds={item.get('allow_credentials', False)}")
-
-    for item in sourcemaps:
-        emit.finding("SourceMap", "MEDIUM",
-                     f"Exposed — {item.get('url','')}")
-
-    for item in secrets:
-        stype   = item.get("type", "Secret")
-        content = str(item.get("content", ""))
-        source  = item.get("source", "")
-        # Calibrated severity for SecurityTxt findings
-        if stype in ("SecurityTxt_Comment_Leak", "SecurityTxt_Encryption_Key",
-                     "SecurityTxt_Canonical_CrossDomain"):
-            sev = "HIGH"
-        elif stype in ("SecurityTxt_Contact_Email",):
-            sev = "MEDIUM"
-        elif stype in ("SecurityTxt_Expired",):
-            sev = "LOW"
+    # ── 5. tech stack ─────────────────────────────────────────────────
+    tech_list = intel.get("tech_stack", [])
+    if tech_list:
+        emit.section("TECH STACK", orbital=True)
+        if nc:
+            print(f"    {' · '.join(tech_list)}")
         else:
-            sev = "HIGH"
-        emit.finding(stype, sev, f"{content[:70]}  ← {source}")
+            sep = f"  {C.GR}·{C.RST}  "
+            row = sep.join(f"{C.MG}{t}{C.RST}" for t in tech_list)
+            print(f"    {row}")
 
-    # ── extraction findings ──
-    extracted = intel.get("extracted_data", [])
-    if extracted:
-        emit.section(f"EXTRACTED DATA  ({len(extracted)} items)", orbital=True)
-        # Group by type for cleaner output
-        from collections import defaultdict
-        grouped = defaultdict(list)
-        for item in extracted:
-            grouped[item["type"]].append(item)
-        
-        for dtype, items in grouped.items():
-            count = len(items)
-            emit.row(dtype.replace("_", " "), f"{count} findings", icon="●", label_colour=C.G)
-            
-            # Always show all findings — no truncation, no JSON redirects
-            for item in items:
-                val  = item["value"]
-                disp = val if len(val) <= 80 else val[:77] + "..."
-                emit.leader_row("  " + disp, item["source_url"])
+    # ── 6. DNS intelligence ───────────────────────────────────────────
+    dns_findings = intel.get("dns_findings", [])
+    if dns_findings:
+        emit.section(f"DNS INTELLIGENCE  ({len(dns_findings)} finding(s))", orbital=True)
+        for f in dns_findings:
+            sev     = f.get("severity", "INFO")
+            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
+            if nc:
+                print(f"  [{sev}] {f.get('issue','')}  {f.get('detail','')}")
+            else:
+                pill = f"{sev_col}{C.B} {sev} {C.RST}"
+                print(f"  {pill}  {C.W}{f.get('issue','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
 
-    # ── endpoints table ───────────────────────────────────────────────
-    if eps:
-        emit.section(f"ENDPOINTS  ({len(eps)} discovered)", orbital=True)
+    # ── 7. CRT.SH subdomains ──────────────────────────────────────────
+    crt_subs = intel.get("crt_subdomains", [])
+    if crt_subs:
+        emit.section(f"CRT.SH SUBDOMAINS  ({len(crt_subs)} discovered)", orbital=True)
+        for sub in sorted(crt_subs, key=lambda s: s.get("hostname","") if isinstance(s,dict) else str(s)):
+            hostname = sub.get("hostname","") if isinstance(sub, dict) else str(sub)
+            url      = sub.get("url","")      if isinstance(sub, dict) else ""
+            queued   = sub.get("queued", False) if isinstance(sub, dict) else False
+            q_tag    = f"  {C.G}[crawling]{C.RST}" if queued else f"  {C.GR}[passive]{C.RST}"
+            if nc:
+                print(f"  ● {hostname:<40} {url}  {'[crawling]' if queued else ''}")
+            else:
+                print(f"  {C.G}●{C.RST} {C.W}{hostname:<40}{C.RST} {C.CYD}{url}{C.RST}{q_tag}")
 
-        # column header re-aligned with endpoint_row (2-space indent)
+    # ── 8. robots.txt ─────────────────────────────────────────────────
+    robots         = intel.get("robots_disallowed", [])
+    robots_allowed = intel.get("robots_allowed", [])
+    all_ep_urls_r  = [e.get("url","") for e in eps]
+    parsed_target  = intel.get("meta",{}).get("target","")
+
+    if robots:
+        emit.section(f"ROBOTS.TXT DISALLOWED  ({len(robots)} paths)", orbital=True)
+        for path in robots:
+            if nc:
+                print(f"  ✖ Disallow       {path}")
+            else:
+                print(f"  {C.R}●{C.RST} {C.R}Disallow{C.RST}       {C.Y}{path}{C.RST}")
+            seen_r: set = set()
+            for u in all_ep_urls_r:
+                if not u or u == parsed_target or u in seen_r: continue
+                if ("/" + path.lstrip("/")) in urlparse(u).path:
+                    seen_r.add(u)
+                    if nc: print(f"       └─ {u}")
+                    else:  print(f"  {C.GR}     └─{C.RST} {C.CYD}{u}{C.RST}")
+
+    if robots_allowed:
+        emit.section(f"ROBOTS.TXT ALLOWED  ({len(robots_allowed)} paths)", orbital=True)
+        for path in robots_allowed:
+            if path.strip() == "/":
+                if nc: print(f"  ✔ Allow  {path}  (entire site explicitly allowed)")
+                else:  print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}  {C.GR}(entire site explicitly allowed){C.RST}")
+            else:
+                if nc: print(f"  ✔ Allow  {path}")
+                else:  print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}")
+                seen_r2: set = set()
+                for u in all_ep_urls_r:
+                    if not u or u == parsed_target or u in seen_r2: continue
+                    if ("/" + path.lstrip("/")) in urlparse(u).path:
+                        seen_r2.add(u)
+                        if nc: print(f"       └─ {u}")
+                        else:  print(f"  {C.GR}     └─{C.RST} {C.CYD}{u}{C.RST}")
+
+    # ── 9. sitemap endpoints ──────────────────────────────────────────
+    sitemap_eps = [e for e in eps if "Sitemap" in e.get("source", [])]
+    if sitemap_eps:
+        emit.section(f"SITEMAP ENDPOINTS  ({len(sitemap_eps)} found)", orbital=True)
+        for ep in sorted(sitemap_eps, key=lambda e: e.get("url","")):
+            u   = ep.get("url","")
+            con = ep.get("confidence","LOW")
+            if nc:
+                print(f"  ● {con:<12} {u}")
+            else:
+                col = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(con, C.GR)
+                print(f"  {C.CY}●{C.RST} {col}{con:<12}{C.RST} {C.W}{u}{C.RST}")
+
+    # ── 10. wayback URLs ──────────────────────────────────────────────
+    wayback_eps = [e for e in eps if "Wayback" in e.get("source", [])]
+    if wayback_eps:
+        emit.section(f"WAYBACK URLS  ({len(wayback_eps)} archived endpoints)", orbital=True)
+        for ep in sorted(wayback_eps, key=lambda e: e.get("url","")):
+            u   = ep.get("url","")
+            con = ep.get("confidence","LOW")
+            if nc:
+                print(f"  ● {con:<12} {u}")
+            else:
+                col = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(con, C.GR)
+                print(f"  {C.MG}●{C.RST} {col}{con:<12}{C.RST} {C.W}{u}{C.RST}")
+
+    # ── 11. HTML comment leaks ────────────────────────────────────────
+    comments = intel.get("comments", [])
+    if comments:
+        # High-signal keywords — fire on their own regardless of URL presence
+        _HIGH_SIGNAL_KW = re.compile(
+            r'(?:password|passwd|secret|token|api[_-]?key|'
+            r'credential|auth[_-]?key|private[_-]?key|access[_-]?key|'
+            r'todo[:\s]+remove|fixme|do\s+not\s+commit|'
+            r'debug[_-]?mode|hack|bypass|hardcod|'
+            r'internal[_-]?(?:use|only|api|endpoint)|'
+            r'prod(?:uction)[_-](?:key|token|secret|db|host)|'
+            r'staging[_-](?:key|token|secret)|'
+            r'backup[_-](?:key|path|db)|'
+            r'admin[_-](?:pass|key|token|secret))',
+            re.I
+        )
+        # Lower-signal keywords — only fire if comment also has an internal path
+        _LOW_SIGNAL_KW = re.compile(
+            r'(?:admin|internal|staging|prod(?:uction)?|backup|'
+            r'temp(?:orary)?|beta|debug|version|framework|'
+            r'new[_-]home|homepage|disabled|removed)',
+            re.I
+        )
+        # Strip scheme+host only — keep the path so http://internal.corp/api/v1 → /api/v1
+        _SCHEME_HOST_RE = re.compile(r'https?://[^\s/]+', re.I)
+        _FULL_URL_RE    = re.compile(r'https?://\S+', re.I)
+        _INT_PATH_RE    = re.compile(r'(?<![a-z0-9\-\._:/])/[a-z0-9_\-\.]{2,}', re.I)
+        _EXT_URL_RE     = re.compile(r'https?://', re.I)
+
+        def _has_internal_path(txt: str) -> bool:
+            # Remove full external URLs, then check if a bare /path remains
+            no_urls = _FULL_URL_RE.sub("", txt)
+            no_urls = _SCHEME_HOST_RE.sub("", no_urls)
+            return bool(_INT_PATH_RE.search(no_urls))
+
+        def _is_sensitive_comment(txt: str) -> bool:
+            # High-signal credential/debug keywords — always flag
+            if _HIGH_SIGNAL_KW.search(txt):
+                return True
+            # Low-signal keywords only matter with an internal path present
+            if _LOW_SIGNAL_KW.search(txt) and _has_internal_path(txt):
+                return True
+            # Bare internal path with no external URL — route disclosure
+            if _has_internal_path(txt) and not _EXT_URL_RE.search(txt):
+                return True
+            # External URL + bare internal path in same comment
+            if _EXT_URL_RE.search(txt) and _has_internal_path(txt):
+                return True
+            # External URL where the host itself is internal (IP, .local, .corp)
+            for m in _FULL_URL_RE.finditer(txt):
+                host_m = re.match(r'https?://([^/\s]+)', m.group(0))
+                if host_m:
+                    h = host_m.group(1).lower()
+                    if (re.match(r'^\d+\.\d+\.\d+\.\d+', h) or
+                            h in ("localhost", "127.0.0.1") or
+                            any(h.endswith(s) for s in
+                                (".local", ".internal", ".corp", ".lan", ".intranet"))):
+                        return True
+            return False
+
+        _sensitive_comments = [
+            c for c in comments
+            if _is_sensitive_comment(str(c.get("content","") or ""))
+        ]
+        if _sensitive_comments:
+            _norm_re = re.compile(r'\b\d+\.\d+\b')
+            seen_norm: dict = {}
+            for c in _sensitive_comments:
+                full = str(c.get("content","") or c.get("text","") or c)
+                raw_sources = c.get("all_sources") or ([c.get("source","")] if c.get("source") else [])
+                key  = _norm_re.sub("N", full)
+                if key not in seen_norm:
+                    seen_norm[key] = {"content": full, "sources": list(dict.fromkeys(s for s in raw_sources if s))}
+                else:
+                    for s in raw_sources:
+                        if s and s not in seen_norm[key]["sources"]:
+                            seen_norm[key]["sources"].append(s)
+
+            _html_tag_re    = re.compile(r'<[^>]+>')
+            _pure_url_re    = re.compile(r'^https?://\S+$')
+            _mostly_html_re = re.compile(r'<(?:a|img|div|span|h[1-6]|p|ul|li|nav|section|header|footer)\b', re.I)
+            _path_in_cmt_re = re.compile(r'(?:^|\s)(/[a-z0-9_\-\.]{2,}(?:/[a-z0-9_\-\.]*)*/?)', re.I)
+            _MAX_CMT        = 160
+
+            def _clean_cmt(raw):
+                return re.sub(r'\s+', ' ', _html_tag_re.sub(" ", raw)).strip()
+
+            def _noise_cmt(raw, cleaned):
+                return (_mostly_html_re.search(raw) or len(cleaned) < 8
+                        or bool(_pure_url_re.match(cleaned)))
+
+            all_ep_urls = [e.get("url","") for e in eps]
+            cmt_filtered = []
+            for entry in seen_norm.values():
+                cleaned = _clean_cmt(entry["content"])
+                if _noise_cmt(entry["content"], cleaned):
+                    continue
+                display = cleaned if len(cleaned) <= _MAX_CMT else cleaned[:_MAX_CMT] + "…"
+                qpaths = []
+                for m in _path_in_cmt_re.finditer(entry["content"]):
+                    cp = m.group(1).strip()
+                    qpaths.extend(u for u in all_ep_urls
+                                  if urlparse(u).path.rstrip("/") == cp.rstrip("/"))
+                cmt_filtered.append({
+                    "display": display,
+                    "sources": entry["sources"],
+                    "queued_paths": list(dict.fromkeys(qpaths)),
+                })
+
+            if cmt_filtered:
+                emit.section(f"HTML COMMENT LEAKS  ({len(cmt_filtered)} unique)", orbital=True)
+                _SRC_CAP = 5
+                for entry in cmt_filtered:
+                    display = entry["display"]
+                    shown   = entry["sources"][:_SRC_CAP]
+                    hidden  = len(entry["sources"]) - len(shown)
+                    qpaths  = entry.get("queued_paths", [])
+                    if nc:
+                        print(f"  [Comment] {display}")
+                        for src in shown: print(f"       └─ {src}")
+                        if hidden: print(f"       └─ (+{hidden} more pages)")
+                        for qp in qpaths: print(f"       ↳ [Queued] {qp}")
+                    else:
+                        print(f"  {C.R}●{C.RST} {C.Y}{display}{C.RST}")
+                        for src in shown:
+                            print(f"  {C.GR}    └─{C.RST} {C.GR}{src}{C.RST}")
+                        if hidden:
+                            print(f"  {C.GR}    └─{C.RST} {C.GR}(+{hidden} more pages){C.RST}")
+                        for qp in qpaths:
+                            print(f"  {C.CY}    ↳{C.RST} {C.CY}[Queued]{C.RST} {C.CYD}{qp}{C.RST}")
         if nc:
             print(f"  {'METHOD':<7}  {'CONFIDENCE':<10}  FLAGS  URL")
             print(f"  {'──'*34}")
@@ -716,15 +954,47 @@ def print_results(intel: dict, target: str, elapsed: float,
                 _disp_clusters.add(_cl)
             deduped.append(ep)
 
-        # Show ALL endpoints — no cap. JSON is for agents, CLI is for humans.
+        # Show ALL in-scope endpoints — filter out third-party hosts (analytics etc.)
+        # These are captured by Playwright as network requests but are out of scope.
+        _third_party_host = re.compile(
+            r'(?:^|\.)(?:google-analytics\.com|analytics\.google\.com|'
+            r'doubleclick\.net|googletagmanager\.com|facebook\.net|'
+            r'connect\.facebook\.net|hotjar\.com|segment\.com|'
+            r'amplitude\.com|mixpanel\.com|intercom\.io|'
+            r'cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com)$',
+            re.I
+        )
         for ep in deduped:
+            ep_host = urlparse(ep.get("url","")).netloc
+            if _third_party_host.search(ep_host):
+                continue
             emit.endpoint_row(ep)
 
         # ── param map for interesting endpoints ──────────────────────
         # Exclude 404_NOT_FOUND endpoints from param map — not injectable
+        # _NOISE_PARAMS is defined at module level
+        _FW_PREFIX_RE = re.compile(
+            r'^(?:wpforms\[|_wpnonce|_wp_http_referer|action\[|'
+            r'wp-submit|testcookie|rememberme|submit\b)',
+            re.I
+        )
+        def _is_noise_p(p: str) -> bool:
+            base = p.lower().split("[")[0].rstrip()
+            if base in _NOISE_PARAMS: return True
+            if _FW_PREFIX_RE.match(p): return True
+            clean = re.sub(r'\[hidden\]$', '', p, flags=re.I).strip()
+            return clean.lower() in _NOISE_PARAMS
+
+        def _has_real_params(ep):
+            raw = ep.get("params", [])
+            if isinstance(raw, dict):
+                raw = [p for bucket in raw.values() for p in bucket]
+            real = [p for p in raw if not _is_noise_p(p)]
+            return bool(real) or ep.get("parameter_sensitive")
+
         interesting = [
             e for e in real_eps
-            if (e.get("params") or e.get("parameter_sensitive"))
+            if _has_real_params(e)
             and e.get("confidence") != "404_NOT_FOUND"
             and 404 not in (e.get("observed_status") or [])
         ]
@@ -738,6 +1008,27 @@ def print_results(intel: dict, target: str, elapsed: float,
                 if isinstance(all_p, dict):
                     # fallback: flatten if called on raw store endpoint
                     all_p = [p for bucket in all_p.values() for p in bucket]
+                # Strip known noise/infra params before display
+                # Also strip: wpforms[*] framework fields, wp hidden fields,
+                # and any param whose [hidden] base is in the noise list
+                _FRAMEWORK_PREFIX = re.compile(
+                    r'^(?:wpforms\[|_wpnonce|_wp_http_referer|action\[|'
+                    r'wp-submit|testcookie|rememberme|submit\b)',
+                    re.I
+                )
+                def _is_noise_param(p: str) -> bool:
+                    base = p.lower().split("[")[0].rstrip()
+                    if base in _NOISE_PARAMS:
+                        return True
+                    if _FRAMEWORK_PREFIX.match(p):
+                        return True
+                    # strip [hidden] suffix and recheck
+                    clean = re.sub(r'\[hidden\]$', '', p, flags=re.I).strip()
+                    if clean.lower() in _NOISE_PARAMS:
+                        return True
+                    return False
+
+                all_p = [p for p in all_p if not _is_noise_param(p)]
                 if not all_p: continue
 
                 method = ep.get("method", "GET")
@@ -759,6 +1050,43 @@ def print_results(intel: dict, target: str, elapsed: float,
                     return p
 
                 tagged_params = [_param_tag(p) for p in all_p]
+
+                # ── Collapse numbered param siblings ──────────────────
+                # e.g. actual-result-1, actual-result-2 ... actual-result-5
+                # → actual-result-[1..5]   (saves display space, reduces noise)
+                def _collapse_numbered(params: list) -> list:
+                    _num_suffix = re.compile(r'^(.+?)[-_](\d+)(\[.*\])?$')
+                    groups: dict = {}   # base → {nums: [], suffix: str}
+                    order:  list = []   # insertion order of bases
+                    for p in params:
+                        m = _num_suffix.match(p)
+                        if m:
+                            base, num, suf = m.group(1), int(m.group(2)), m.group(3) or ""
+                            if base not in groups:
+                                groups[base] = {"nums": [], "suffix": suf}
+                                order.append(("group", base))
+                            groups[base]["nums"].append(num)
+                        else:
+                            order.append(("single", p))
+                    result = []
+                    seen_groups: set = set()
+                    for kind, val in order:
+                        if kind == "single":
+                            result.append(val)
+                        else:
+                            if val in seen_groups:
+                                continue
+                            seen_groups.add(val)
+                            g = groups[val]
+                            nums = sorted(g["nums"])
+                            suf  = g["suffix"]
+                            if len(nums) == 1:
+                                result.append(f"{val}-{nums[0]}{suf}")
+                            else:
+                                result.append(f"{val}-[{nums[0]}..{nums[-1]}]{suf}")
+                    return result
+
+                tagged_params = _collapse_numbered(tagged_params)
 
                 if nc:
                     print(f"    {method:<7} {disp}")
@@ -808,15 +1136,6 @@ def print_results(intel: dict, target: str, elapsed: float,
                 print(f"    WS  {sio['base_url']}")
             else:
                 print(f"  {C.CY}◈{C.RST} {C.CY}WS{C.RST}  {C.W}{sio['base_url']}{C.RST}")
-
-    # ── auth-walled ───────────────────────────────────────────────────
-    auth_eps = [e for e in eps if e.get("auth_required")]
-    if auth_eps:
-        emit.section(f"AUTH-WALLED  ({len(auth_eps)} endpoints)", orbital=True)
-        for ep in auth_eps:
-            method = ep.get("methods",["GET"])[0]
-            url = ep.get("url","")
-            emit.row(method, url, icon="⬢", label_colour=C.RD)
 
     # ── security.txt findings ────────────────────────────────────────
     _sec_txt_types = {
@@ -897,103 +1216,113 @@ def print_results(intel: dict, target: str, elapsed: float,
                 else:
                     print(f"  {C.GR}     └─{C.RST} {C.CYD}{u}{C.RST}")
 
-    # ── robots disallowed ─────────────────────────────────────────────
-    robots = intel.get("robots_disallowed", [])
-    if robots:
-        emit.section(f"ROBOTS.TXT DISALLOWED  ({len(robots)} paths)", orbital=True)
-        all_ep_urls = [e.get("url","") for e in eps]
-        parsed_target = intel.get("meta",{}).get("target","")
-        for path in robots:
-            emit.row("Disallow", path, icon="●", label_colour=C.O)
-            # Find ALL crawled endpoints under this disallowed path — no cap
-            seen = set()
-            children = []
-            for u in all_ep_urls:
-                if not u or u == parsed_target or u in seen:
-                    continue
-                if ("/" + path.lstrip("/")) in urlparse(u).path:
-                    seen.add(u)
-                    children.append(u)
-            children.sort()
-            for child_url in children:
-                if nc:
-                    print(f"       └─ {child_url}")
-                else:
-                    print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
-
-    # ── robots allowed ────────────────────────────────────────────────
-    robots_allowed = intel.get("robots_allowed", [])
-    if robots_allowed:
-        emit.section(f"ROBOTS.TXT ALLOWED  ({len(robots_allowed)} paths)", orbital=True)
-        for path in robots_allowed:
-            # If the allow path is "/" it means everything is permitted — no child list needed
-            # (listing all crawled URLs under "/" is misleading since it covers the whole site)
-            if path.strip() == "/":
-                if nc:
-                    print(f"  [Allow]  {path}  (entire site explicitly allowed)")
-                else:
-                    print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}  {C.GR}(entire site explicitly allowed){C.RST}")
-            else:
-                if nc:
-                    print(f"  [Allow]  {path}")
-                else:
-                    print(f"  {C.G}●{C.RST} {C.G}Allow{C.RST}  {C.W}{path}{C.RST}")
-                # Show crawled endpoints specifically under this non-root allow path
-                all_ep_urls = [e.get("url","") for e in eps]
-                parsed_target = intel.get("meta",{}).get("target","")
-                seen = set()
-                children = []
-                for u in all_ep_urls:
-                    if not u or u == parsed_target or u in seen:
-                        continue
-                    if ("/" + path.lstrip("/")) in urlparse(u).path:
-                        seen.add(u)
-                        children.append(u)
-                for child_url in sorted(children):
-                    if nc:
-                        print(f"       └─ {child_url}")
-                    else:
-                        print(f"  {C.GR}     └─{C.RST} {C.CYD}{child_url}{C.RST}")
-
-    # ── sitemap.xml endpoints ─────────────────────────────────────────
-    sitemap_eps = [e for e in eps if "Sitemap" in e.get("source", [])]
-    if sitemap_eps:
-        emit.section(f"SITEMAP ENDPOINTS  ({len(sitemap_eps)} found)", orbital=True)
-        for ep in sorted(sitemap_eps, key=lambda e: e.get("url","")):
-            url = ep.get("url","")
-            conf = ep.get("confidence","LOW")
+    # ── 12. auth-walled ───────────────────────────────────────────────
+    auth_eps = [e for e in real_eps if e.get("auth_required") or
+                (e.get("observed_status") and
+                 all(s in (401, 403) for s in e.get("observed_status", [])))]
+    if auth_eps:
+        emit.section(f"AUTH-WALLED  ({len(auth_eps)} endpoints)", orbital=True)
+        for ep in auth_eps:
+            eu = ep.get("url","")
+            obs = ep.get("observed_status", [])
+            sc  = f" [{','.join(str(s) for s in obs)}]" if obs else ""
             if nc:
-                print(f"  [Sitemap] {conf:<12}  {url}")
+                print(f"  ● {ep.get('method','GET'):<6} {eu}{sc}")
             else:
-                cc = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(conf, C.GR)
-                print(f"  {C.CY}●{C.RST} {cc}{conf:<12}{C.RST} {C.W}{url}{C.RST}")
+                print(f"  {C.R}●{C.RST} {C.W}{ep.get('method','GET'):<10}{C.RST} {C.CYD}{eu}{C.RST}{C.GR}{sc}{C.RST}")
 
-    # ── wayback machine URLs ──────────────────────────────────────────
-    wayback_eps = [e for e in eps if "Wayback" in e.get("source", [])]
-    if wayback_eps:
-        emit.section(f"WAYBACK URLS  ({len(wayback_eps)} archived endpoints)", orbital=True)
-        for ep in sorted(wayback_eps, key=lambda e: e.get("url","")):
-            url = ep.get("url","")
-            conf = ep.get("confidence","LOW")
+    # ── 13. security findings ─────────────────────────────────────────
+    secrets    = intel.get("secrets", [])
+    cors       = intel.get("cors_issues", [])
+    gql        = intel.get("graphql", [])
+    oas        = intel.get("openapi", [])
+    sourcemaps = intel.get("sourcemaps", [])
+    if any([secrets, cors, gql, oas, sourcemaps]):
+        emit.section("SECURITY FINDINGS")
+    for item in gql:
+        emit.finding("GraphQL", "HIGH",
+                     f"Introspection OPEN — {item.get('url','')}  "
+                     f"({item.get('types_count','?')} types)")
+    for item in oas:
+        emit.finding("OpenAPI", "MEDIUM", f"Spec exposed — {item.get('url','')}")
+    for item in cors:
+        sev = "HIGH" if item.get("allow_credentials") else "MEDIUM"
+        emit.finding("CORS", sev,
+                     f"{item.get('url','')}  "
+                     f"origin={item.get('reflected','')}  "
+                     f"creds={item.get('allow_credentials', False)}")
+    for item in sourcemaps:
+        emit.finding("SourceMap", "MEDIUM", f"Exposed — {item.get('url','')}")
+    for item in secrets:
+        stype   = item.get("type", "Secret")
+        content = str(item.get("content", ""))
+        source  = item.get("source", "")
+        if stype in ("SecurityTxt_Comment_Leak", "SecurityTxt_Encryption_Key",
+                     "SecurityTxt_Canonical_CrossDomain"):
+            sev = "HIGH"
+        elif stype in ("SecurityTxt_Contact_Email",):
+            sev = "MEDIUM"
+        elif stype in ("SecurityTxt_Expired",):
+            sev = "LOW"
+        else:
+            sev = "HIGH"
+        emit.finding(stype, sev, f"{content[:70]}  ← {source}")
+
+    # ── 14. sensitive files ───────────────────────────────────────────
+    sensitive_files = intel.get("sensitive_files", [])
+    if sensitive_files:
+        emit.section(f"SENSITIVE FILES  ({len(sensitive_files)} exposed)", orbital=True)
+        for f in sensitive_files:
+            sev     = f.get("severity", "INFO")
+            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
             if nc:
-                print(f"  [Wayback] {conf:<12}  {url}")
+                print(f"  [{sev}] {f.get('type','')}  {f.get('url','')}")
+                if f.get("preview"): print(f"       {f['preview'][:80]}")
             else:
-                cc = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(conf, C.GR)
-                print(f"  {C.MG}●{C.RST} {cc}{conf:<12}{C.RST} {C.W}{url}{C.RST}")
+                pill = f"{sev_col}{C.B} {sev:<8}{C.RST}"
+                print(f"  {pill}  {C.O}{f.get('type',''):<20}{C.RST} {C.W}{f.get('url','')}{C.RST}")
+                if f.get("preview"):
+                    print(f"  {C.GR}     └─ {f['preview'][:90]}{C.RST}")
 
-    # ── crt.sh subdomains ─────────────────────────────────────────────
-    crt_subs = intel.get("crt_subdomains", [])
-    if crt_subs:
-        emit.section(f"CRT.SH SUBDOMAINS  ({len(crt_subs)} discovered)", orbital=True)
-        for sub in sorted(crt_subs, key=lambda s: s.get("hostname","")):
-            hostname = sub.get("hostname","")
-            url      = sub.get("url","")
+    # ── 15. vulnerable JS libraries ───────────────────────────────────
+    js_libs = intel.get("js_libs", [])
+    if js_libs:
+        emit.section(f"VULNERABLE JS LIBRARIES  ({len(js_libs)} found)", orbital=True)
+        for f in js_libs:
             if nc:
-                print(f"  [CRT.sh]  {hostname}  {url}")
+                print(f"  [HIGH] {f.get('library','')}@{f.get('version','')}  {f.get('cve','')}  {f.get('detail','')}")
             else:
-                print(f"  {C.BL}●{C.RST} {C.W}{hostname:<40}{C.RST} {C.GR}{url}{C.RST}")
+                print(f"  {C.R}●{C.RST} {C.Y}{f.get('library','')}{C.RST}@{C.W}{f.get('version','')}{C.RST}  {C.R}{f.get('cve','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
 
-    # ── intelligence summary — candidates and classifications ────────────
+    # ── 16. cloud storage ─────────────────────────────────────────────
+    cloud_probes = intel.get("cloud_probes", [])
+    if cloud_probes:
+        emit.section(f"CLOUD STORAGE  ({len(cloud_probes)} finding(s))", orbital=True)
+        for f in cloud_probes:
+            sev     = f.get("severity", "INFO")
+            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
+            if nc:
+                print(f"  [{sev}] {f.get('issue','')}  {f.get('url','')}")
+                print(f"       {f.get('detail','')}")
+            else:
+                pill = f"{sev_col}{C.B} {sev} {C.RST}"
+                print(f"  {pill}  {C.W}{f.get('issue',''):<28}{C.RST} {C.CYD}{f.get('url','')}{C.RST}")
+                print(f"  {C.GR}     └─ {f.get('detail','')}{C.RST}")
+
+    # ── 17. extracted data ────────────────────────────────────────────
+    extracted = intel.get("extracted_data", [])
+    if extracted:
+        emit.section(f"EXTRACTED DATA  ({len(extracted)} items)", orbital=True)
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for item in extracted:
+            grouped[item["type"]].append(item)
+        for dtype, items in grouped.items():
+            emit.row(dtype.replace("_", " "), f"{len(items)} findings", icon="●", label_colour=C.G)
+            for item in items:
+                val  = item["value"]
+                disp = val if len(val) <= 80 else val[:77] + "..."
+                emit.leader_row("  " + disp, item["source_url"])
     s_admin    = s.get("admin_panels", 0)
     s_idor     = s.get("idor_candidates", 0)
     s_sqli     = s.get("sqli_candidates", 0)
@@ -1070,172 +1399,6 @@ def print_results(intel: dict, target: str, elapsed: float,
                         }.get(em, C.GL)
                         print(f"  {C.GR}     └─{C.RST} {mc2}{em:<6}{C.RST} {C.W}{eu}{C.RST}")
 
-    # ── HTML comments found ───────────────────────────────────────────
-    comments = intel.get("comments", [])
-    if comments:
-        # Comments stored as {"content": text, "source": url}
-        # Sensitive keyword filter — widened to include URL/path references and framework leaks
-        _SENSITIVE_KW = re.compile(
-            r'(?:password|passwd|secret|token|api[_-]?key|internal|'
-            r'prod(?:uction)?|staging|admin|backup|credential|'
-            r'todo[:\s]+remove|fixme|do\s+not\s+commit|debug[_-]?mode|'
-            r'hack|bypass|hardcod|framework|version|temporary|temp|'
-            r'beta|new-home|homepage|@\s*/[a-z]|https?://)',
-            re.I
-        )
-        _sensitive_comments = [
-            c for c in comments
-            if _SENSITIVE_KW.search(str(c.get("content","") or ""))
-        ]
-        if _sensitive_comments:
-            # Deduplicate near-identical comments that differ only in a timing/numeric value
-            # e.g. 10x "Page Generated in 0.0XXX Seconds using the THM Framework..."
-            # Strategy: normalise all floating-point numbers to "N" and deduplicate on that key,
-            # keeping the FIRST occurrence (and its source URL) as the representative entry.
-            # All other sources that share the same normalised content are listed as alt-sources.
-            _norm_re = re.compile(r'\b\d+\.\d+\b')
-            seen_norm: dict = {}   # normalised_key -> {"content": full_text, "sources": [url,...]}
-            for c in _sensitive_comments:
-                full = str(c.get("content","") or c.get("text","") or c)
-                # Prefer all_sources list (multi-page dedup) over single source field
-                raw_sources = c.get("all_sources") or ([c.get("source","")] if c.get("source") else [])
-                src  = str(c.get("url","") or c.get("source",""))
-                key  = _norm_re.sub("N", full)
-                if key not in seen_norm:
-                    seen_norm[key] = {"content": full, "sources": list(dict.fromkeys(s for s in raw_sources if s))}
-                else:
-                    for s in raw_sources:
-                        if s and s not in seen_norm[key]["sources"]:
-                            seen_norm[key]["sources"].append(s)
-
-            deduped = list(seen_norm.values())
-            emit.section(f"HTML COMMENT LEAKS  ({len(deduped)} unique)", orbital=True)
-            for entry in deduped:
-                full_content = entry["content"]
-                sources = entry["sources"]
-                # Print full comment — wrap long lines at 120 chars for readability
-                if nc:
-                    print(f"  [Comment] {full_content}")
-                    for src in sources:
-                        print(f"       └─ {src}")
-                else:
-                    # Multi-line comments: print each line indented
-                    lines = full_content.splitlines()
-                    if len(lines) == 1:
-                        print(f"  {C.R}●{C.RST} {C.Y}{full_content}{C.RST}")
-                    else:
-                        print(f"  {C.R}●{C.RST} {C.Y}{lines[0]}{C.RST}")
-                        for ln in lines[1:]:
-                            print(f"    {C.Y}{ln}{C.RST}")
-                    for src in sources:
-                        print(f"  {C.GR}    └─{C.RST} {C.GR}{src}{C.RST}")
-
-    # ── WAF / CDN detection ──────────────────────────────────────────
-    waf_findings = intel.get("waf_findings", [])
-    if waf_findings:
-        emit.section(f"WAF / CDN  ({len(waf_findings)} detected)", orbital=True)
-        for wf in waf_findings:
-            conf_col = {"HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(wf.get("confidence",""), C.GR) if not nc else ""
-            if nc:
-                print(f"  [WAF] {wf.get('waf','')}  ({wf.get('confidence','')})")
-            else:
-                pill = f"{conf_col}{C.B}[{wf.get('confidence','?')}]{C.RST}"
-                print(f"  {C.MG}◈{C.RST} {pill} {C.W}{wf.get('waf','')}{C.RST}")
-
-    # ── TLS findings ─────────────────────────────────────────────────
-    tls_findings = intel.get("tls_findings", [])
-    if tls_findings:
-        emit.section(f"TLS / CERTIFICATE  ({len(tls_findings)} issue(s))", orbital=True)
-        for f in tls_findings:
-            sev = f.get("severity", "INFO")
-            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
-            if nc:
-                print(f"  [{sev}] {f.get('issue','')}  {f.get('detail','')}")
-            else:
-                pill = f"{sev_col}{C.B} {sev} {C.RST}"
-                print(f"  {pill}  {C.W}{f.get('issue','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
-
-    # ── header audit ─────────────────────────────────────────────────
-    header_issues = intel.get("header_audit", [])
-    if header_issues:
-        emit.section(f"SECURITY HEADERS  ({len(header_issues)} issue(s))", orbital=True)
-        for f in header_issues:
-            sev = f.get("severity", "INFO")
-            sev_col = {"HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
-            if nc:
-                print(f"  [{sev}] {f.get('header','')}  {f.get('detail','')}")
-            else:
-                # Severity pill: HIGH=red, MEDIUM=orange, LOW=grey
-                pill = f"{sev_col}{C.B}[{sev}]{C.RST}"
-                print(f"  {pill} {sev_col}{f.get('header',''):<32}{C.RST} {C.GR}{f.get('detail','')}{C.RST}")
-
-    # ── DNS findings ─────────────────────────────────────────────────
-    dns_findings = intel.get("dns_findings", [])
-    if dns_findings:
-        emit.section(f"DNS INTELLIGENCE  ({len(dns_findings)} finding(s))", orbital=True)
-        for f in dns_findings:
-            sev = f.get("severity", "INFO")
-            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
-            if nc:
-                print(f"  [{sev}] {f.get('issue','')}  {f.get('detail','')}")
-            else:
-                pill = f"{sev_col}{C.B} {sev} {C.RST}"
-                print(f"  {pill}  {C.W}{f.get('issue','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
-
-    # ── sensitive files ───────────────────────────────────────────────
-    sensitive_files = intel.get("sensitive_files", [])
-    if sensitive_files:
-        emit.section(f"SENSITIVE FILES  ({len(sensitive_files)} exposed)", orbital=True)
-        for f in sensitive_files:
-            sev = f.get("severity", "INFO")
-            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
-            if nc:
-                print(f"  [{sev}] {f.get('type','')}  {f.get('url','')}")
-                if f.get("preview"): print(f"       {f['preview'][:80]}")
-            else:
-                pill = f"{sev_col}{C.B} {sev:<8}{C.RST}"
-                print(f"  {pill}  {C.O}{f.get('type',''):<20}{C.RST} {C.W}{f.get('url','')}{C.RST}")
-                if f.get("preview"):
-                    print(f"  {C.GR}     └─ {f['preview'][:90]}{C.RST}")
-
-    # ── JS SCA ────────────────────────────────────────────────────────
-    js_libs = intel.get("js_libs", [])
-    if js_libs:
-        emit.section(f"VULNERABLE JS LIBRARIES  ({len(js_libs)} found)", orbital=True)
-        for f in js_libs:
-            if nc:
-                print(f"  [HIGH] {f.get('library','')}@{f.get('version','')}  {f.get('cve','')}  {f.get('detail','')}")
-            else:
-                print(f"  {C.R}●{C.RST} {C.Y}{f.get('library','')}{C.RST}@{C.W}{f.get('version','')}{C.RST}  {C.R}{f.get('cve','')}{C.RST}  {C.GR}{f.get('detail','')}{C.RST}")
-
-    # ── cloud bucket probes ───────────────────────────────────────────
-    cloud_probes = intel.get("cloud_probes", [])
-    if cloud_probes:
-        sev_counts = {"CRITICAL": sum(1 for f in cloud_probes if f.get("severity") == "CRITICAL"),
-                      "other": sum(1 for f in cloud_probes if f.get("severity") != "CRITICAL")}
-        emit.section(f"CLOUD STORAGE  ({len(cloud_probes)} finding(s))", orbital=True)
-        for f in cloud_probes:
-            sev = f.get("severity", "INFO")
-            sev_col = {"CRITICAL": C.BG_RED, "HIGH": C.R, "MEDIUM": C.O, "LOW": C.GR}.get(sev, C.GR) if not nc else ""
-            if nc:
-                print(f"  [{sev}] {f.get('issue','')}  {f.get('url','')}")
-                print(f"       {f.get('detail','')}")
-            else:
-                pill = f"{sev_col}{C.B} {sev} {C.RST}"
-                print(f"  {pill}  {C.W}{f.get('issue',''):<28}{C.RST} {C.CYD}{f.get('url','')}{C.RST}")
-                print(f"  {C.GR}     └─ {f.get('detail','')}{C.RST}")
-
-    # ── tech stack ────────────────────────────────────────────────────
-    tech_list = intel.get("tech_stack", [])
-    if tech_list:
-        emit.section("TECH STACK", orbital=True)
-        if nc:
-            print(f"    {' · '.join(tech_list)}")
-        else:
-            sep = f"  {C.GR}·{C.RST}  "
-            row = sep.join(f"{C.MG}{t}{C.RST}" for t in tech_list)
-            print(f"    {row}")
-
     # ── footer ────────────────────────────────────────────────────────
     print()
     if saved_path:
@@ -1307,6 +1470,11 @@ class Config:
         self.enable_cors        = kw.get("enable_cors",        True)
         self.output_format      = kw.get("output_format",      "json")
         self.output_file: Optional[str] = kw.get("output_file", None)
+        # ── Scope expansion ───────────────────────────────────────────
+        self.follow_subdomains  = kw.get("follow_subdomains",  False)
+        self.follow_redirects   = kw.get("follow_redirects",   False)
+        # extra_scope: frozenset of additional allowed hostnames
+        self.extra_scope: frozenset = frozenset(kw.get("extra_scope", []))
         self.user_agent = kw.get(
             "user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1436,6 +1604,33 @@ async def fetch(session, method, url, rl, max_retries=3, base_delay=0.5, **kw):
                 await asyncio.sleep(base_delay * (2**attempt))
     return None, None, None
 
+
+async def fetch_with_redirect(session, method, url, rl, max_retries=3, base_delay=0.5, **kw):
+    """
+    Like fetch() but returns the final URL after following redirects.
+    Used by the Spider when --follow-redirects is active so it can
+    add the destination host to _dynamic_scope.
+    Returns (status, headers, body, final_url).
+    """
+    domain = urlparse(url).netloc
+    await rl.wait(domain)
+    for attempt in range(max_retries + 1):
+        try:
+            async with session.request(method, url, ssl=False,
+                                       allow_redirects=True, **kw) as resp:
+                if resp.status == 429 or (resp.status == 403 and attempt > 0):
+                    rl.backoff(domain)
+                    await asyncio.sleep(float(resp.headers.get("Retry-After", base_delay * (2**attempt))))
+                    continue
+                body = await resp.text(errors="replace")
+                rl.recover(domain)
+                final_url = str(resp.url)
+                return resp.status, dict(resp.headers), body, final_url
+        except Exception:
+            if attempt < max_retries:
+                await asyncio.sleep(base_delay * (2**attempt))
+    return None, None, None, url
+
 # ══════════════════════════════════════════════════════════════════════
 # URL UTILITIES
 # ══════════════════════════════════════════════════════════════════════
@@ -1448,6 +1643,24 @@ _ID_RE = re.compile(
     r')$',
     re.I
 )
+
+# Params injected by plugins, analytics scripts, or session management —
+# not real application inputs and never injection targets.
+_NOISE_PARAMS: frozenset = frozenset({
+    "aiovg_rand_seed", "ver", "v", "gtm", "tid", "cid", "gcd",
+    "npa", "dma", "_p", "_gaz", "frm", "pscdl", "rcb", "sr",
+    "uaa", "uab", "uafvl", "uam", "uamb", "uap", "uapv", "uaw",
+    "ul", "gaf", "_s", "tfd", "_fv", "_ss", "_c", "_ee", "_nsi",
+    "tag_exp", "sid", "sct", "seg", "dl", "dt", "en", "are",
+    "ir", "gdid", "fbclid", "ec_cart_id",
+    "wordpress_test_cookie",
+    # WP EasyCart internal — not injectable, just currency/session state
+    "ec_currency_conversion", "ec_option1", "ec_cart_form_action",
+    "ec_cart_form_nonce", "ec_account_form_action", "ec_account_form_nonce",
+    # WP generic hidden fields
+    "page_id", "page_title", "page_url", "url_referer",
+    "ak_js", "comment_post_id", "comment_parent",
+})
 
 _NUMERIC_ID_RE = re.compile(
     r'^(?:id|uid|uuid|user_?id|account_?id|item_?id|object_?id|record_?id|'
@@ -1505,22 +1718,56 @@ _AUTH_PATTERNS  = {
 # Paths that look like auth patterns but aren't — /author/ archives, /authorize-this-app, etc.
 _AUTH_EXCLUDE_RE = re.compile(r'/author(?:s)?/', re.I)
 
-_SQLI_PARAM_RE = re.compile(r'(?:id|select|report|update|query|search|from|where|order|by|group|limit|offset|slug|category|tag)$', re.I)
+# ── Injection classifier param names ─────────────────────────────────────
+# Only param names that genuinely map to the vulnerability class.
+# Login-form params (log, pwd, username, password, email) are excluded from
+# SQLi — login forms are brute-force / credential-stuffing surface, not SQLi.
+
+# SQLi: params that feed DB queries — search/filter/lookup inputs
+_SQLI_PARAM_RE = re.compile(
+    r'^(?:search|q|query|keyword|keywords|filter|s|'
+    r'category|cat|tag|sort|order|orderby|'
+    r'name|title|slug|author|'
+    r'id|uid|item_id|product_id|post_id|page_id|user_id|account_id)$',
+    re.I
+)
+# Login-form params excluded from SQLi classifier entirely
+_SQLI_AUTH_EXCLUDE = frozenset({
+    'username', 'user', 'login', 'log', 'email', 'mail',
+    'password', 'passwd', 'pwd', 'pass', 'secret',
+})
+
+# CMDi: explicit OS-execution / shell-invocation param names only
 _CMDI_PARAM_RE = re.compile(
-    # url/host/endpoint alone are SSRF-prone but not CMDi — require explicit shell terms
-    r'^(?:cmd|command|exec|execute|shell|ping|nslookup|'
-    r'system|passthru|popen|eval|run|script|sh|bash|'
-    r'dir|folder|filepath|file_path|upload_path|'
-    r'proc|process|spawn|invoke)$',
+    r'^(?:cmd|command|exec|execute|shell|ping|nslookup|traceroute|'
+    r'dig|whois|system|passthru|popen|eval|'
+    r'run|script|sh|bash|zsh|powershell|'
+    r'proc|process|spawn|invoke|'
+    r'ip|addr|address|target_host|dest_host)$',
     re.I
 )
-# Separate SSRF pattern — url/host/endpoint params on non-static endpoints
+
+# SSRF: tier 1 — flag on param name alone (clearly URL-feeding)
+_SSRF_PARAM_TIER1 = frozenset({
+    'url', 'uri', 'redirect', 'redirect_url', 'redirect_uri',
+    'callback', 'webhook', 'webhook_url',
+    'return_url', 'returnto', 'return_to', 'next', 'continue',
+    'image_url', 'file_url', 'feed', 'rss', 'atom',
+})
+# SSRF: tier 2 — flag only if observed value looks like a URL/domain
+_SSRF_PARAM_TIER2 = frozenset({
+    'src', 'source', 'dest', 'destination',
+    'endpoint', 'proxy', 'fetch', 'load', 'import',
+    'server', 'host', 'target', 'link', 'path',
+})
 _SSRF_PARAM_RE = re.compile(
-    r'^(?:url|uri|src|source|dest|destination|redirect|callback|'
-    r'host|server|endpoint|target|proxy|fetch|load|import|'
-    r'webhook|next|return|returnto|return_url|continue)$',
+    r'^(?:url|uri|redirect|redirect_url|redirect_uri|callback|webhook|webhook_url|'
+    r'return_url|returnto|return_to|next|continue|image_url|file_url|feed|rss|atom|'
+    r'src|source|dest|destination|endpoint|proxy|fetch|load|import|'
+    r'server|host|target|link|path)$',
     re.I
 )
+_URL_VALUE_RE = re.compile(r'^https?://', re.I)
 
 # ── Noise path filter ─────────────────────────────────────────────────
 # Path patterns that are NEVER real injectable app endpoints on any target.
@@ -2939,26 +3186,45 @@ class Extractor:
                 emit.info(f"[JS-API] {full}")
 
     @classmethod
-    def html_comments(cls, soup, url, store, emit):
-        # Deliberately excludes 'test' and 'api' — both are too common in build-tool
-        # comments (e.g. "<!-- api handler -->", "<!-- for testing -->") to be signal.
+    def html_comments(cls, soup, url, store, emit, base_url=None, discover_url=None, depth=0):
+        """
+        Extract sensitive HTML comments and queue any paths found inside them.
+
+        If a comment contains a path like <!-- /nibbleblog/ directory --> the
+        path is resolved against the current page URL (base_url) and passed to
+        discover_url() so it goes through the normal visited/is_valid checks.
+        """
         kw = {"todo","fixme","bug","admin","hidden","secret","debug","config",
               "key","password","cred","token","hack","temp","internal",
               "private","disabled","endpoint","framework","version","beta",
               "homepage","temporary","new-home","http://","https://"}
+        _path_re = re.compile(r'(?:^|\s)(/[a-z0-9_\-\.]{2,}(?:/[a-z0-9_\-\.]*)*/?)', re.I)
         for c in soup.find_all(string=lambda t: isinstance(t, Comment)):
             txt = c.strip()
             if len(txt) < 4:
                 continue
-            # Match keyword list OR a path/URL reference anywhere in the comment
             has_kw   = any(k in txt.lower() for k in kw)
-            has_path = bool(re.search(r'(?:^|\s)/[a-z0-9_\-]{3,}', txt, re.I))
+            has_path = bool(_path_re.search(txt))
             has_url  = bool(re.search(r'https?://', txt, re.I))
             if (has_kw or has_path or has_url
                     or bool(re.match(r'^[/\.][a-z0-9_\-\.#]{3,}', txt))):
                 if store.add_comment(txt, url):
                     emit.info(f"[Comment] {txt[:120]}")
-                    # IMPROVEMENT 3: Run patterns on comments
+                    # Queue any paths found in the comment
+                    if discover_url is not None and base_url is not None:
+                        for m in _path_re.finditer(txt):
+                            cpath = m.group(1).strip()
+                            if re.match(r'^/[0-9]+$', cpath):
+                                continue
+                            full = urljoin(base_url, cpath)
+                            if discover_url(full, depth + 1, "Comment_Path", show_feed=True):
+                                emit.info(f"[Comment→Queue] {full}")
+                    # Also queue any full URLs found in the comment
+                    if discover_url is not None:
+                        for m in re.finditer(r'(https?://[^\s\'"<>]+)', txt):
+                            candidate = m.group(1).rstrip(".,)")
+                            discover_url(candidate, depth + 1, "Comment_URL", show_feed=True)
+                    # Run extraction patterns on comments
                     for pat, dtype in cls._EXTRACTION_PATTERNS:
                         if dtype in ('Email', 'Phone'):
                             for m in pat.finditer(txt):
@@ -2968,7 +3234,6 @@ class Extractor:
                                         v = re.sub(r'[\s.\-\(\)\/]', '', v)
                                         if not (7 <= len(v) <= 15): continue
                                         if not re.match(r'\+?\d+$', v): continue
-                                        # Reject date-like patterns
                                         if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', v): continue
                                     store.add_extracted_data(dtype, v.strip(), url)
 
@@ -4445,33 +4710,76 @@ _UNAUTH_API_EXCLUDE = re.compile(
 
 def classify_unauthenticated_api(store: Store):
     """
-    Flag API endpoints that respond 200 without any auth credentials.
+    Flag API endpoints that respond 200 without auth credentials.
 
-    Rule: path matches _UNAUTH_API_RE + observed status 200 + auth_required=False.
-    auth_required is set to True only when the spider saw 401/403. If it saw 200
-    without any cookie/header auth in the session, the endpoint is unauthenticated.
+    Platform-aware suppression: known public API namespaces for detected
+    platforms are excluded — they're public by spec, not a finding.
+    What remains: non-public API paths that returned 200 unauthenticated,
+    or WP REST endpoints that returned 401 (auth-gated = interesting).
 
-    This is pure ASM gold — exposed API surfaces are the highest-value scan output.
     Sets ep["unauthenticated_api"] = True.
     """
+    ts = store.tech_stack
+
+    # Build platform-specific public namespace exclusions
+    # These are paths that are PUBLIC BY DESIGN for the detected platform.
+    # Flagging them as "unauthenticated API" is noise, not signal.
+    public_namespaces: list = []
+
+    if any("WordPress" in t for t in ts):
+        public_namespaces.append(re.compile(
+            r'^/wp-json/wp/v2/(?:posts|pages|categories|tags|media|types|'
+            r'taxonomies|blocks|templates|template-parts|navigation|'
+            r'menu-items|font-families|global-styles|svplayer|'
+            r'aiovg_videos|aiovg_categories|aiovg_tags|comments)'
+            r'(?:/[^/]*)?/?$',   # allow trailing /<id> — public read
+            re.I
+        ))
+        public_namespaces.append(re.compile(
+            r'^/wp-json/oembed/', re.I
+        ))
+        public_namespaces.append(re.compile(
+            r'^/(?:feed|comments/feed|xmlrpc\.php)/?$', re.I
+        ))
+        # popup-maker, etc. — third-party plugin public endpoints
+        public_namespaces.append(re.compile(
+            r'^/wp-json/popup-maker/', re.I
+        ))
+
+    if any("Drupal" in t for t in ts):
+        public_namespaces.append(re.compile(
+            r'^/jsonapi/(?:node|taxonomy_term|file|media)(?:/[^/]*)?/?$', re.I
+        ))
+
+    if any("Strapi" in t for t in ts):
+        # Strapi public collections only — /api/<collection> without ID
+        public_namespaces.append(re.compile(
+            r'^/api/[^/]+/?$', re.I
+        ))
+
     for ep in store.endpoints.values():
         if not _is_confirmed(ep):
             continue
-        url   = ep["url"]
-        path  = urlparse(url).path
+        url  = ep["url"]
+        path = urlparse(url).path
+
         if not _UNAUTH_API_RE.match(path):
             continue
         if _UNAUTH_API_EXCLUDE.search(path):
             continue
         if _STATIC_EXT.search(path):
             continue
-        # Must have seen a real 200 response — not just speculative
+
+        # Suppress platform-public namespaces
+        if any(pat.match(path) for pat in public_namespaces):
+            continue
+
         obs = ep.get("observed_status", [])
         if 200 not in obs:
             continue
-        # Must NOT be behind an auth wall (spider saw 401/403 at some point)
         if ep.get("auth_required", False):
             continue
+
         ep["unauthenticated_api"] = True
 
 
@@ -4560,11 +4868,33 @@ def classify_legacy_endpoints(store: Store):
     Two conditions for flagging:
       a. Path matches _LEGACY_PATH_RE (known dangerous/legacy path)
       b. Source includes "Wayback" AND observed status 200 (zombie endpoint)
+         AND the URL was NOT discovered by the live crawler (i.e. genuinely
+         historical — not just a normal page that Wayback also indexed).
 
     Sets ep["legacy_endpoint"] = True and ep["legacy_reason"] = str.
     xmlrpc.php on this scan (from the AI team's example) would be caught by
     condition (a) alone — no Wayback needed.
     """
+    # Build set of paths discovered by live crawl (non-Wayback sources)
+    live_paths: set = set()
+    for ep in store.endpoints.values():
+        sources = ep.get("source", [])
+        if sources and any(s != "Wayback" for s in sources):
+            live_paths.add(urlparse(ep["url"]).path.rstrip("/"))
+
+    # Paths that are universal infrastructure — never legacy regardless of source.
+    # robots.txt, sitemap.xml etc. are expected on every site and not attack surface.
+    _INFRA_EXCLUDE = re.compile(
+        r'^/(?:robots\.txt|sitemap(?:_index)?\.xml|favicon\.ico|'
+        r'\.well-known/|crossdomain\.xml|browserconfig\.xml|'
+        r'ads\.txt|security\.txt|humans\.txt)$',
+        re.I
+    )
+
+    # wp-login.php action variants — only the root is legacy-flagged,
+    # not action=lostpassword (standard forgot-password) or action=postpass
+    _WP_LOGIN_SAFE_ACTIONS = frozenset({"lostpassword", "postpass", "logout"})
+
     for ep in store.endpoints.values():
         if not _is_confirmed(ep):
             continue
@@ -4574,16 +4904,28 @@ def classify_legacy_endpoints(store: Store):
         sources = ep.get("source", [])
         reason  = None
 
+        # Never flag universal infra paths
+        if _INFRA_EXCLUDE.match(path):
+            continue
+
         # Condition A: known dangerous legacy path that responded
         if _LEGACY_PATH_RE.search(path):
-            if obs:  # confirmed — any real response counts
+            # For wp-login.php, only flag root — not safe action variants
+            if "wp-login.php" in path.lower():
+                qs = urlparse(url).query.lower()
+                action = ""
+                for part in qs.split("&"):
+                    if part.startswith("action="):
+                        action = part.split("=",1)[1]
+                if action in _WP_LOGIN_SAFE_ACTIONS:
+                    continue
+            if obs:
                 reason = f"legacy_known_path:{path.split('?')[0]}"
 
-        # Condition B: Wayback-sourced URL that is still alive (200)
-        # This catches *any* removed endpoint the Wayback CDX knows about
-        # that the target still serves — true zombie endpoint detection.
+        # Condition B: Wayback-sourced URL still alive AND not in live crawl
         if not reason and "Wayback" in sources and 200 in obs:
-            reason = "wayback_zombie:historical_url_still_live"
+            if path.rstrip("/") not in live_paths:
+                reason = "wayback_zombie:historical_url_still_live"
 
         if reason:
             ep["legacy_endpoint"] = True
@@ -4631,23 +4973,72 @@ _IDOR_EXCLUDE_RE = re.compile(
 )
 
 def classify_idor_candidates(store: Store):
+    """
+    IDOR candidate classification.
+
+    Requires:
+    - Numeric/UUID ID in the URL path OR a known object-reference param name
+    - Endpoint is confirmed 200
+    - NOT a known public REST collection endpoint for the detected platform
+      (e.g. /wp-json/wp/v2/posts is public by WP spec — an individual post
+       /wp-json/wp/v2/posts/59 is still flagged because it's a specific object)
+    - NOT a static asset or infra path
+
+    Platform-aware: if WordPress detected, suppress IDOR on collection-only
+    endpoints (no trailing numeric ID). Individual object endpoints are kept.
+    """
+    ts = store.tech_stack
+
+    # Public collection paths by platform — suppress if path matches exactly
+    # but KEEP if there's a numeric/UUID ID segment after the collection name
+    _WP_COLLECTIONS = re.compile(
+        r'^/wp-json/wp/v2/(?:posts|pages|categories|tags|media|types|'
+        r'taxonomies|comments|blocks|templates|template-parts|'
+        r'navigation|menu-items|font-families|global-styles|svplayer|'
+        r'aiovg_videos|aiovg_categories|aiovg_tags)/?$',
+        re.I
+    )
+    _DRUPAL_COLLECTIONS = re.compile(
+        r'^/jsonapi/(?:node|taxonomy_term|file|media)/?$', re.I
+    )
+    _WP_ACTIVE = any("WordPress" in t for t in ts)
+    _DRUPAL_ACTIVE = any("Drupal" in t for t in ts)
+
     for ep in store.endpoints.values():
-        if not _is_confirmed(ep): continue   # speculative — skip
-        url = ep["url"]
+        if not _is_confirmed(ep):
+            continue
+        url  = ep["url"]
+        path = urlparse(url).path
+
         # Never flag infrastructure, CDN, or static asset paths
         if _IDOR_EXCLUDE_RE.search(url):
             continue
-        # Never flag static files
         if _STATIC_EXT.search(url.split("?")[0]):
             continue
-        all_params = []
-        for b in ("query", "form", "js", "openapi", "runtime"):
-            all_params += ep.get("params", {}).get(b, [])
+
+        # Platform-aware: suppress pure collection endpoints (no ID suffix)
+        if _WP_ACTIVE and _WP_COLLECTIONS.match(path):
+            continue
+        if _DRUPAL_ACTIVE and _DRUPAL_COLLECTIONS.match(path):
+            continue
+
+        # Flatten params
+        raw = ep.get("params", {})
+        if isinstance(raw, list):
+            all_params = raw
+        else:
+            all_params = []
+            for b in ("query", "form", "js", "openapi", "runtime"):
+                all_params += raw.get(b, [])
+        all_params = [p for p in all_params
+                      if p.lower().split("[")[0] not in _NOISE_PARAMS]
+
         has_id_param = any(
             _NUMERIC_ID_RE.search(p) and p.lower() not in _IDOR_PARAM_BLOCKLIST
             for p in all_params
         )
-        has_id_path  = bool(_PATH_ID_RE.search(url) or _UUID_PATH_RE.search(url))
+        has_id_path = bool(_PATH_ID_RE.search(url) or _UUID_PATH_RE.search(url))
+
         if has_id_param or has_id_path:
             ep["idor_candidate"] = True
             ep["idor_signals"] = {
@@ -4656,23 +5047,105 @@ def classify_idor_candidates(store: Store):
             }
 
 def score_injection_candidates(store: Store):
+    """
+    Classify endpoints as injection candidates based on param names only.
+
+    Rules:
+    - SQLi: param name in _SQLI_PARAM_RE AND not a login-form param
+            AND endpoint is not a known auth page (login/register/forgot)
+    - CMDi: param name in _CMDI_PARAM_RE (explicit OS-execution names only)
+    - SSRF: tier-1 param name (URL-feeding by definition) fires unconditionally;
+            tier-2 fires only if an observed param value looks like a URL/domain.
+            Endpoints that are redirects to same-host only are suppressed.
+
+    Platform-aware suppression: if WordPress is in the tech stack,
+    known public WP REST API collection endpoints are never injection candidates.
+    """
+    # Build platform-aware exclusion set from detected tech stack
+    public_path_prefixes: set = set()
+    ts = store.tech_stack
+    if any("WordPress" in t for t in ts):
+        # WP REST v2 collections are public by spec — not injection targets
+        public_path_prefixes.update({
+            "/wp-json/wp/v2/posts", "/wp-json/wp/v2/pages",
+            "/wp-json/wp/v2/categories", "/wp-json/wp/v2/tags",
+            "/wp-json/wp/v2/media", "/wp-json/wp/v2/types",
+            "/wp-json/wp/v2/taxonomies", "/wp-json/wp/v2/comments",
+            "/wp-json/wp/v2/users",   # users kept for sensitive_data but not injection
+            "/wp-json/oembed",
+            "/feed", "/comments/feed",
+        })
+    if any("Drupal" in t for t in ts):
+        public_path_prefixes.update({
+            "/jsonapi/node", "/jsonapi/taxonomy_term",
+            "/jsonapi/file", "/jsonapi/media",
+        })
+    if any("Strapi" in t for t in ts):
+        # Strapi public collections — auth config varies but collections are public by default
+        public_path_prefixes.update({"/api/"})
+
+    # Auth endpoint paths — SQLi excluded here (brute-force surface, not SQLi)
+    _auth_path_re = re.compile(
+        r'/(?:login|signin|sign-in|log-in|register|signup|sign-up|'
+        r'forgot|lostpassword|wp-login\.php|authenticate)(?:[/?]|$)',
+        re.I
+    )
+
     for ep in store.endpoints.values():
-        if not _is_confirmed(ep): continue   # speculative — skip
-        all_params = []
-        for b in ("query", "form", "js", "openapi", "runtime"):
-            all_params += ep.get("params", {}).get(b, [])
-        sqli_params = [p for p in all_params if _SQLI_PARAM_RE.match(p)]
+        if not _is_confirmed(ep):
+            continue
+        url  = ep["url"]
+        path = urlparse(url).path
+
+        # Platform public path — never injection candidate
+        if any(path.startswith(pfx) for pfx in public_path_prefixes):
+            continue
+
+        # Flatten all param sources
+        raw = ep.get("params", {})
+        if isinstance(raw, list):
+            all_params = raw
+        else:
+            all_params = []
+            for b in ("query", "form", "js", "openapi", "runtime"):
+                all_params += raw.get(b, [])
+        # Strip noise params before classification
+        all_params = [p for p in all_params
+                      if p.lower().split("[")[0] not in _NOISE_PARAMS]
+
+        # ── SQLi ──────────────────────────────────────────────────────
+        # Exclude auth pages entirely
+        if not _auth_path_re.search(path):
+            sqli_params = [
+                p for p in all_params
+                if _SQLI_PARAM_RE.match(p)
+                and p.lower() not in _SQLI_AUTH_EXCLUDE
+            ]
+            if sqli_params:
+                ep["sqli_candidate"] = True
+                ep["sqli_params"]    = sqli_params
+
+        # ── CMDi ──────────────────────────────────────────────────────
         cmdi_params = [p for p in all_params if _CMDI_PARAM_RE.match(p)]
-        ssrf_params = [p for p in all_params if _SSRF_PARAM_RE.match(p)]
-        if sqli_params:
-            ep["sqli_candidate"]  = True
-            ep["sqli_params"]     = sqli_params
         if cmdi_params:
-            ep["cmdi_candidate"]  = True
-            ep["cmdi_params"]     = cmdi_params
+            ep["cmdi_candidate"] = True
+            ep["cmdi_params"]    = cmdi_params
+
+        # ── SSRF ──────────────────────────────────────────────────────
+        ssrf_params = []
+        obs_vals = ep.get("observed_values", {})
+        for p in all_params:
+            pn = p.lower().split("[")[0]
+            if pn in _SSRF_PARAM_TIER1:
+                ssrf_params.append(p)
+            elif pn in _SSRF_PARAM_TIER2:
+                # Only flag tier-2 if an observed value looks like a URL
+                val = obs_vals.get(p, "")
+                if val and _URL_VALUE_RE.match(str(val)):
+                    ssrf_params.append(p)
         if ssrf_params:
-            ep["ssrf_candidate"]  = True
-            ep["ssrf_params"]     = ssrf_params
+            ep["ssrf_candidate"] = True
+            ep["ssrf_params"]    = ssrf_params
 
 def _flag_upload_endpoints(store: Store):
     # Strong signals — path segments that unambiguously mean file upload
@@ -5628,25 +6101,39 @@ class Spider:
         self.rl = DomainRateLimiter(fixed_delay=getattr(self.cfg, "request_delay", 0.0))
         self._depth_cnt: Dict[int,int] = defaultdict(int)
         self.queue.put_nowait((target, 0, "Seed"))
-        self._current_url: str = target   # Graph: page currently being processed
+        self._current_url: str = target
+        # Dynamic scope expansion for --follow-redirects
+        self._dynamic_scope: Set[str] = set()
 
     def is_valid(self, url):
         try:
-            # Normalize backslashes before validation
             url = url.replace(chr(92)+chr(92), "/").replace(chr(92), "/")
             p = urlparse(url)
         except Exception:
             return False
-        if p.netloc != self.base_domain: return False
+
+        host = p.netloc
+
+        # ── Scope check ───────────────────────────────────────────────
+        in_scope = False
+        if host == self.base_domain:
+            in_scope = True
+        elif self.cfg.follow_subdomains and host.endswith("." + self.base_domain):
+            in_scope = True
+        elif host in self.cfg.extra_scope:
+            in_scope = True
+        elif hasattr(self, "_dynamic_scope") and host in self._dynamic_scope:
+            in_scope = True
+
+        if not in_scope:
+            return False
+
         low = url.lower()
         if any(low.endswith(ext) or f"{ext}?" in low for ext in self.cfg.extensions_to_ignore):
             return False
-        # Intercept socket.io polling URLs — park in store, never queue
         if _SOCKETIO_RE.search(url):
             self.store.add_socketio(url)
             return False
-        # Noise path filter — blocks VCS browser UI, CI pages, CDN artefact paths
-        # Works on any target. Disable with --no-filter / -F if you want raw output.
         if self.cfg.enable_noise_filter and _NOISE_PATH_RE.search(p.path):
             return False
         return bool(p.scheme in ("http","https"))
@@ -5870,7 +6357,8 @@ class Spider:
 
     def _process_html(self, url, text, depth, source):
         soup = BeautifulSoup(text, "lxml")
-        Extractor.html_comments(soup, url, self.store, self.emit)
+        Extractor.html_comments(soup, url, self.store, self.emit,
+                                base_url=url, discover_url=self._discover_url, depth=depth)
         for tag in soup.find_all(["a","link","area"], href=True):
             href = tag.get("href","").strip()
             if href and not href.startswith(("javascript:","mailto:","tel:","#")):
@@ -6113,11 +6601,28 @@ class Spider:
     async def _fetch_and_process(self, session, url, depth, source):
         self.visited.add(normalize(url))
         self._depth_cnt[depth] += 1
-        self._current_url = url   # Graph: track current page for edge attribution
-        
-        s, hdrs, body = await fetch(session, 'GET', url, self.rl,
-                                    max_retries=self.cfg.max_retries,
-                                    base_delay=self.cfg.retry_base_delay)
+        self._current_url = url
+
+        if self.cfg.follow_redirects:
+            s, hdrs, body, final_url = await fetch_with_redirect(
+                session, 'GET', url, self.rl,
+                max_retries=self.cfg.max_retries,
+                base_delay=self.cfg.retry_base_delay)
+            if final_url and final_url != url:
+                dest_host = urlparse(final_url).netloc
+                if dest_host and dest_host != self.base_domain:
+                    if dest_host not in self._dynamic_scope:
+                        self._dynamic_scope.add(dest_host)
+                        self.emit.always_info(
+                            f"[Scope+] Redirect destination added to scope: {dest_host}")
+                    # Queue the final URL for crawling
+                    norm_final = normalize(final_url)
+                    if norm_final not in self.visited and self.is_valid(final_url):
+                        self.queue.put_nowait((final_url, depth + 1, "Redirect"))
+        else:
+            s, hdrs, body = await fetch(session, 'GET', url, self.rl,
+                                        max_retries=self.cfg.max_retries,
+                                        base_delay=self.cfg.retry_base_delay)
         
         if s is None or body is None:
             return
@@ -6766,6 +7271,14 @@ def _build_parser() -> argparse.ArgumentParser:
     flags.add_argument("--no-filter",     "-F", action="store_true",
                        help="Disable noise path filter (include VCS browser UI, CDN paths, socket.io in output)")
 
+    scope = p.add_argument_group(f"{C.CY}Scope{C.RST}")
+    scope.add_argument("--follow-subdomains", "-S", action="store_true",
+                       help="Crawl discovered subdomains (CRT.sh) within the base domain")
+    scope.add_argument("--follow-redirects",  "-r", action="store_true",
+                       help="Follow cross-host redirects and add the destination host to scope")
+    scope.add_argument("--scope", type=str, default=None, metavar="HOSTS",
+                       help="Comma-separated extra hosts to include in scope  e.g. api.target.com,cdn.target.com")
+
     util = p.add_argument_group(f"{C.CY}Utilities{C.RST}")
     util.add_argument("--diff",    "-D", type=str, default=None, metavar="OLD_REPORT",
                       help="Diff this scan against an old JSON report")
@@ -6861,6 +7374,10 @@ def main():
         screenshot_priority = args.screenshot if args.screenshot else "standard",
         output_format   = args.format,
         output_file     = args.out,
+        follow_subdomains = args.follow_subdomains,
+        follow_redirects  = args.follow_redirects,
+        extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
+                            if args.scope else [],
     )
 
     try:
