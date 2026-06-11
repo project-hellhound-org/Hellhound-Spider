@@ -541,6 +541,10 @@ def print_results(intel: dict, target: str, elapsed: float,
     eps = intel.get("endpoints", [])
     nc  = emit._nc
 
+    # Pre-compute real (non-noise) endpoints — used by multiple sections below.
+    _NOISE_SOURCES_GLOBAL = frozenset({"Backup_Probe", "Backup_Suffix", "WellKnown", "Leaked_File"})
+    real_eps = [e for e in eps if not all(src in _NOISE_SOURCES_GLOBAL for src in e.get("source", ["Crawl"]))]
+
     def _bad(v):
         """Red if > 0 (something found), grey if 0 (clean)."""
         if isinstance(v, int):
