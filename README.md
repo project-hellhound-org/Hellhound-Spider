@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.7-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.8-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -61,42 +61,20 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.7 — Orbital Recon Release
+## v13.8 — Scoping & Sitemap Patch
 
-v13.7 transforms the Spider from a crawler into a multi-vector recon platform. This release introduces external intelligence sources, protocol-level bypass engines, and full security header auditing.
+v13.8 addresses edge-case scoping bugs with sitemaps and Wayback historical URLs, while resolving robots.txt visual representation in the CLI.
 
-### New in v13.7
+### New in v13.8
 
-- **Patchright Bot-Bypass** — Transparently bypasses WAF/bot-detection fingerprinting.
-- **Response Header Analysis** — Audits missing and misconfigured security headers.
-- **crt.sh Subdomain Enumeration** — Discovers sibling subdomains via Certificate Transparency logs.
-- **Wayback Machine Integration** — Recovers historical endpoints via CDX API.
-- **Sitemap.xml Deep Parse** — Full recursive parsing of sitemap index files.
-- **Robots.txt Allow/Disallow Tree** — Builds endpoint mapping trees from robots directives.
-- **security.txt Parser (RFC 9116)** — Extracts contact and policy metadata.
-- **HAR File Import** — Seed crawls with authenticated browser sessions.
-- **HTML Comment Leak Detection** — Extracts and deduplicates sensitive developer comments.
-- **WebSocket Detection** — Isolates socket.io and WS endpoints.
-- **Attack Surface Management (ASM)** — TLS inspection, DNS intelligence, WAF fingerprinting, active JS SCA, and cloud bucket verification.
-- **Active Probing** — Automatically probes for exposed sensitive files and admin panels.
-- **Notes Extraction** — Extracts and parses target notes.
-- **GraphQL Introspection** — Detects and maps GraphQL endpoints.
-- **Expanded Subdomains** — Enhanced subdomain enumeration engines.
-
-### Carried from v13.0
-
-**Enhanced Accuracy** — Near-zero false positives on complex SPAs. Hardened extraction for erratic DOM structures and obfuscated JS routes.
-
-**Noise Filter** — Repository browser paths (`/blob/`, `/tree/`, `/commits/`), CDN artefacts, and structural UI links are suppressed before entering the endpoint store.
-
-**JS Orphan Params** — Parameters found in JS files without a resolvable target URL are stored as `js_orphan_params` — wordlist hints, not injectable targets.
-
-**Form Field Intelligence** — Rich per-field metadata: `type`, `hidden`, `file`, `required`. Downstream agents can skip CSRF tokens and prioritise real injectable fields.
-
-**Shorthand Flags** — Every flag has a short single-letter alias. `-d`, `-c`, `-t`, `-v`, `-C`, `-a`, `-o`, `-f`, `-x`, `-s`, `-D` — full list below.
-
-
-
+- **Sitemap & Wayback www Scoping Fix** — Strips `www.` subdomains when matching scoped hostnames, ensuring correct parsing of redirected sitemaps and historical Wayback URLs.
+- **Robots.txt Sitemap Reference Display** — Visually maps and shows sitemap references inside the robots tree.
+- **CLI Print Alignment** — Corrects terminal formatting alignment when reporting discovered endpoints.
+- **IP Target Optimization** — Skips DNS, subdomain, and Wayback recon on IP targets.
+- **Parallel Active Probing** — Executes sensitive file probing and admin panel discovery concurrently for faster scans.
+- **Update Checking Engine** — Automatically fetches and alerts you about remote git repository updates upon scan completion.
+- **Basic Authentication Support** — Added `--basic-auth` / `-u` parameter for HTTP basic authentication.
+- **Sanitized Cookie Inputs** — Warns and filters out non-cookie authentication keys accidentally passed to the `--cookie` flag.
 
 ---
 
