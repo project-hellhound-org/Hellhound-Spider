@@ -59,7 +59,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "13.8"
+VERSION      = "13.10"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -1326,9 +1326,6 @@ def print_results(intel: dict, target: str, elapsed: float,
                 emit.leader_row("  " + disp, item["source_url"])
     s_admin    = s.get("admin_panels", 0)
     s_idor     = s.get("idor_candidates", 0)
-    s_sqli     = s.get("sqli_candidates", 0)
-    s_cmdi     = s.get("cmdi_candidates", 0)
-    s_ssrf     = s.get("ssrf_candidates", 0)
     s_upload   = s.get("upload_endpoints", 0)
     s_auth_ep  = s.get("auth_endpoints", 0)
     s_unauth   = s.get("unauthenticated_apis", 0)
@@ -1337,9 +1334,6 @@ def print_results(intel: dict, target: str, elapsed: float,
     intel_items = [
         (s_admin,    "Admin Panel(s)",           C.R),
         (s_idor,     "IDOR Candidate(s)",        C.Y),
-        (s_sqli,     "SQLi Candidate(s)",        C.O),
-        (s_cmdi,     "CMDi Candidate(s)",        C.R),
-        (s_ssrf,     "SSRF Candidate(s)",        C.O),
         (s_upload,   "File Upload(s)",           C.CY),
         (s_auth_ep,  "Auth Endpoint(s)",         C.MG),
         (s_unauth,   "Unauth API(s)",            C.R),
@@ -1363,12 +1357,6 @@ def print_results(intel: dict, target: str, elapsed: float,
                     tagged = [e for e in real_eps if e.get("admin_panel") and _not_asset(e)]
                 elif label == "IDOR Candidate(s)":
                     tagged = [e for e in real_eps if e.get("idor_candidate") and _not_asset(e)]
-                elif label == "SQLi Candidate(s)":
-                    tagged = [e for e in real_eps if e.get("sqli_candidate") and _not_asset(e)]
-                elif label == "CMDi Candidate(s)":
-                    tagged = [e for e in real_eps if e.get("cmdi_candidate") and _not_asset(e)]
-                elif label == "SSRF Candidate(s)":
-                    tagged = [e for e in real_eps if e.get("ssrf_candidate") and _not_asset(e)]
                 elif label == "File Upload(s)":
                     tagged = [e for e in real_eps if e.get("file_upload_candidate") and _not_asset(e)]
                 elif label == "Auth Endpoint(s)":
@@ -1474,6 +1462,9 @@ class Config:
                                                                         
         self.follow_subdomains  = kw.get("follow_subdomains",  False)
         self.follow_redirects   = kw.get("follow_redirects",   False)
+        self.enable_subdomain_enum = kw.get("enable_subdomain_enum", False)
+        self.wordlist           = kw.get("wordlist",           None)
+        self.no_crawl           = kw.get("no_crawl",           False)
                                                                 
         self.extra_scope: frozenset = frozenset(kw.get("extra_scope", []))
         self.user_agent = kw.get(
@@ -1737,52 +1728,6 @@ _AUTH_EXCLUDE_RE = re.compile(r'/author(?:s)?/', re.I)
                                                                            
                                                                              
 
-                                                                 
-_SQLI_PARAM_RE = re.compile(
-    r'^(?:search|q|query|keyword|keywords|filter|s|'
-    r'category|cat|tag|sort|order|orderby|'
-    r'name|title|slug|author|'
-    r'id|uid|item_id|product_id|post_id|page_id|user_id|account_id)$',
-    re.I
-)
-                                                          
-_SQLI_AUTH_EXCLUDE = frozenset({
-    'username', 'user', 'login', 'log', 'email', 'mail',
-    'password', 'passwd', 'pwd', 'pass', 'secret',
-})
-
-                                                                 
-_CMDI_PARAM_RE = re.compile(
-    r'^(?:cmd|command|exec|execute|shell|ping|nslookup|traceroute|'
-    r'dig|whois|system|passthru|popen|eval|'
-    r'run|script|sh|bash|zsh|powershell|'
-    r'proc|process|spawn|invoke|'
-    r'ip|addr|address|target_host|dest_host)$',
-    re.I
-)
-
-                                                               
-_SSRF_PARAM_TIER1 = frozenset({
-    'url', 'uri', 'redirect', 'redirect_url', 'redirect_uri',
-    'callback', 'webhook', 'webhook_url',
-    'return_url', 'returnto', 'return_to', 'next', 'continue',
-    'image_url', 'file_url', 'feed', 'rss', 'atom',
-})
-                                                                    
-_SSRF_PARAM_TIER2 = frozenset({
-    'src', 'source', 'dest', 'destination',
-    'endpoint', 'proxy', 'fetch', 'load', 'import',
-    'server', 'host', 'target', 'link', 'path',
-})
-_SSRF_PARAM_RE = re.compile(
-    r'^(?:url|uri|redirect|redirect_url|redirect_uri|callback|webhook|webhook_url|'
-    r'return_url|returnto|return_to|next|continue|image_url|file_url|feed|rss|atom|'
-    r'src|source|dest|destination|endpoint|proxy|fetch|load|import|'
-    r'server|host|target|link|path)$',
-    re.I
-)
-_URL_VALUE_RE = re.compile(r'^https?://', re.I)
-
                                                                         
                                                                            
                                                                        
@@ -1911,10 +1856,6 @@ class Store:
             "file_upload_candidate": False,
             "idor_candidate":       False,
             "idor_signals":         {},
-            "sqli_candidate":       False,
-            "sqli_params":          [],
-            "cmdi_candidate":       False,
-            "cmdi_params":          [],
             "screenshot":           None,
         }
 
@@ -2281,24 +2222,6 @@ class Store:
 \
 \
 \
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-           
-        _SSRF_RE = re.compile(
-            r'^(?:url|uri|src|source|dest|destination|redirect|callback|'
-            r'host|server|endpoint|target|proxy|fetch|load|import|'
-            r'webhook|next|return|returnto|return_url|continue)$',
-            re.I
-        )
         results = []
         for ep in formatted_eps:
             conf = ep.get("confidence", "LOW")
@@ -2320,15 +2243,8 @@ class Store:
             if not all_params:
                 continue                          
 
-                                  
-            ssrf_params = [p for p in all_params if _SSRF_RE.match(p)]
-            ssrf_cand   = bool(ssrf_params)
-
                               
             score = 0
-            if ep.get("cmdi_candidate"):        score += 40
-            if ep.get("sqli_candidate"):        score += 35
-            if ssrf_cand:                       score += 25
             if ep.get("idor_candidate"):        score += 20
             if ep.get("file_upload_candidate"): score += 15
             if ep.get("unauthenticated_api"):   score += 18            
@@ -2351,15 +2267,9 @@ class Store:
                 "params_detail":         params_detail,
                 "form_fields_detail":    ep.get("form_fields_detail", []),
                 "auth_required":         ep.get("auth_required", False),
-                "cmdi_candidate":        ep.get("cmdi_candidate", False),
-                "cmdi_params":           ep.get("cmdi_params", []),
-                "sqli_candidate":        ep.get("sqli_candidate", False),
-                "sqli_params":           ep.get("sqli_params", []),
                 "idor_candidate":        ep.get("idor_candidate", False),
                 "idor_signals":          ep.get("idor_signals", {}),
                 "file_upload_candidate": ep.get("file_upload_candidate", False),
-                "ssrf_candidate":        ssrf_cand,
-                "ssrf_params":           ssrf_params,
                 "observed_values":       obs_val,
                 "unauthenticated_api":   ep.get("unauthenticated_api", False),
                 "sensitive_data_source": ep.get("sensitive_data_source", False),
@@ -2393,8 +2303,6 @@ class Store:
             "auth_endpoints":     sum(1 for e in eps if e.get("auth_classification")),
             "upload_endpoints":   sum(1 for e in eps if e.get("file_upload_candidate")),
             "idor_candidates":    sum(1 for e in eps if e.get("idor_candidate")),
-            "sqli_candidates":    sum(1 for e in eps if e.get("sqli_candidate")),
-            "cmdi_candidates":    sum(1 for e in eps if e.get("cmdi_candidate")),
             "extracted_data":     len(self.extracted_data),
             "robots_disallowed":  len(self.robots_paths),
             "robots_allowed":     len(self.robots_allowed_paths),
@@ -2458,10 +2366,6 @@ class Store:
                 "file_upload_candidate": e.get("file_upload_candidate", False),
                 "idor_candidate": e.get("idor_candidate", False),
                 "idor_signals": e.get("idor_signals", {}),
-                "sqli_candidate": e.get("sqli_candidate", False),
-                "sqli_params": e.get("sqli_params", []),
-                "cmdi_candidate": e.get("cmdi_candidate", False),
-                "cmdi_params": e.get("cmdi_params", []),
                 "screenshot": e.get("screenshot"),
                                                                                            
                                                                               
@@ -5076,6 +4980,18 @@ def classify_idor_candidates(store: Store):
             _NUMERIC_ID_RE.search(p) and p.lower() not in _IDOR_PARAM_BLOCKLIST
             for p in all_params
         )
+
+        # A "userid"/"user_id"-style param next to credential fields (pwd, password,
+        # username, etc.) is a login form field, not an object reference — don't
+        # flag the endpoint as an IDOR candidate on that basis alone.
+        if has_id_param:
+            _lower_params = {p.lower() for p in all_params}
+            _CRED_FIELDS = {"pwd", "password", "passwd", "username", "userid",
+                            "user_id", "login", "email", "captcha", "recaptcha",
+                            "csrf", "csrf_token", "_token"}
+            if len(_lower_params & _CRED_FIELDS) >= 2:
+                has_id_param = False
+
         has_id_path = bool(_PATH_ID_RE.search(url) or _UUID_PATH_RE.search(url))
 
         if has_id_param or has_id_path:
@@ -5084,107 +5000,6 @@ def classify_idor_candidates(store: Store):
                 "id_params":   [p for p in all_params if _NUMERIC_ID_RE.search(p)],
                 "has_id_path": has_id_path,
             }
-
-def score_injection_candidates(store: Store):
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-       
-                                                                 
-    public_path_prefixes: set = set()
-    ts = store.tech_stack
-    if any("WordPress" in t for t in ts):
-                                                                           
-        public_path_prefixes.update({
-            "/wp-json/wp/v2/posts", "/wp-json/wp/v2/pages",
-            "/wp-json/wp/v2/categories", "/wp-json/wp/v2/tags",
-            "/wp-json/wp/v2/media", "/wp-json/wp/v2/types",
-            "/wp-json/wp/v2/taxonomies", "/wp-json/wp/v2/comments",
-            "/wp-json/wp/v2/users",                                                    
-            "/wp-json/oembed",
-            "/feed", "/comments/feed",
-        })
-    if any("Drupal" in t for t in ts):
-        public_path_prefixes.update({
-            "/jsonapi/node", "/jsonapi/taxonomy_term",
-            "/jsonapi/file", "/jsonapi/media",
-        })
-    if any("Strapi" in t for t in ts):
-                                                                                              
-        public_path_prefixes.update({"/api/"})
-
-                                                                              
-    _auth_path_re = re.compile(
-        r'/(?:login|signin|sign-in|log-in|register|signup|sign-up|'
-        r'forgot|lostpassword|wp-login\.php|authenticate)(?:[/?]|$)',
-        re.I
-    )
-
-    for ep in store.endpoints.values():
-        if not _is_confirmed(ep):
-            continue
-        url  = ep["url"]
-        path = urlparse(url).path
-
-                                                          
-        if any(path.startswith(pfx) for pfx in public_path_prefixes):
-            continue
-
-                                   
-        raw = ep.get("params", {})
-        if isinstance(raw, list):
-            all_params = raw
-        else:
-            all_params = []
-            for b in ("query", "form", "js", "openapi", "runtime"):
-                all_params += raw.get(b, [])
-                                                  
-        all_params = [p for p in all_params
-                      if p.lower().split("[")[0] not in _NOISE_PARAMS]
-
-                                                                        
-                                     
-        if not _auth_path_re.search(path):
-            sqli_params = [
-                p for p in all_params
-                if _SQLI_PARAM_RE.match(p)
-                and p.lower() not in _SQLI_AUTH_EXCLUDE
-            ]
-            if sqli_params:
-                ep["sqli_candidate"] = True
-                ep["sqli_params"]    = sqli_params
-
-                                                                        
-        cmdi_params = [p for p in all_params if _CMDI_PARAM_RE.match(p)]
-        if cmdi_params:
-            ep["cmdi_candidate"] = True
-            ep["cmdi_params"]    = cmdi_params
-
-                                                                        
-        ssrf_params = []
-        obs_vals = ep.get("observed_values", {})
-        for p in all_params:
-            pn = p.lower().split("[")[0]
-            if pn in _SSRF_PARAM_TIER1:
-                ssrf_params.append(p)
-            elif pn in _SSRF_PARAM_TIER2:
-                                                                        
-                val = obs_vals.get(p, "")
-                if val and _URL_VALUE_RE.match(str(val)):
-                    ssrf_params.append(p)
-        if ssrf_params:
-            ep["ssrf_candidate"] = True
-            ep["ssrf_params"]    = ssrf_params
 
 def _flag_upload_endpoints(store: Store):
                                                                         
@@ -5751,7 +5566,19 @@ _ADMIN_CONFIRM_RE = re.compile(
 
 
 async def probe_admin_panels(session, base: str, store, emit, rl):
-    emit.always_info(f"[AdminProbe] Probing {len(_ADMIN_PROBE_PATHS)} admin/management paths…")
+    # Dedupe paths that resolve to the same effective URL (e.g. "/admin" and
+    # "/admin/" both appear in the list and both join to the same target).
+    _seen_urls = set()
+    _dedup_paths = []
+    for p in _ADMIN_PROBE_PATHS:
+        u = base.rstrip("/") + p
+        u_norm = u.rstrip("/") or u
+        if u_norm in _seen_urls:
+            continue
+        _seen_urls.add(u_norm)
+        _dedup_paths.append(p)
+
+    emit.always_info(f"[AdminProbe] Probing {len(_dedup_paths)} admin/management paths…")
     found = 0
     sem = asyncio.Semaphore(10)
 
@@ -5798,7 +5625,7 @@ async def probe_admin_panels(session, base: str, store, emit, rl):
         emit.warn_sev(f"[AdminProbe] ADMIN PANEL ({s}) → {url}  [{title[:60]}]", "HIGH")
         found += 1
 
-    await asyncio.gather(*(_probe(p) for p in _ADMIN_PROBE_PATHS))
+    await asyncio.gather(*(_probe(p) for p in _dedup_paths))
     emit.always_info(f"[AdminProbe] Done — {found} admin panel(s) found")
 
                                                                         
@@ -5977,6 +5804,75 @@ async def probe_sensitive_files(session, base: str, store, emit, rl):
 
     await asyncio.gather(*(_probe(p, sev, ft) for p, sev, ft in _SENSITIVE_PATHS))
     emit.always_info(f"[SensitiveFiles] Done — {found} sensitive file(s) found")
+
+
+async def probe_wordlist(session, base: str, store, emit, rl, wordlist_path: str):
+    """Directory/file brute force using a user-supplied wordlist.
+    Reuses canary fingerprinting + soft-404 filtering from the sensitive-file probe
+    so noisy SPA/wildcard-200 targets don't flood results with false positives."""
+    try:
+        with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
+            words = [w.strip() for w in f if w.strip() and not w.startswith("#")]
+    except Exception as e:
+        emit.warn(f"[Wordlist] Failed to read {wordlist_path}: {e}")
+        return
+
+    if not words:
+        emit.warn(f"[Wordlist] {wordlist_path} is empty")
+        return
+
+    emit.always_info(f"[Wordlist] Brute-forcing {len(words)} path(s) from {wordlist_path}…")
+
+    canary_slug  = hashlib.md5(f"{base}-canary-{random.random()}".encode()).hexdigest()[:16]
+    canary_url   = base.rstrip("/") + f"/{canary_slug}-nonexistent-wl"
+    canary_s, canary_hdrs, canary_body = await fetch(session, "GET", canary_url, rl)
+    canary_hash  = None
+    canary_len   = 0
+    canary_is_html = False
+    if canary_body and canary_s in (200, 206):
+        canary_hash    = hashlib.md5(canary_body.encode(errors="ignore")).hexdigest()
+        canary_len     = len(canary_body)
+        canary_ct      = ((canary_hdrs or {}).get("content-type", "") or "").lower()
+        canary_is_html = "text/html" in canary_ct
+        emit.info(f"[Wordlist] Soft-404 canary fingerprint: {canary_hash[:12]}… "
+                  f"(status={canary_s}, len={canary_len}, html={canary_is_html})")
+
+    found = 0
+    sem = asyncio.Semaphore(20)
+
+    async def _probe_word(word):
+        nonlocal found
+        path = word if word.startswith("/") else "/" + word
+        url = base.rstrip("/") + path
+        async with sem:
+            s, hdrs, body = await fetch(session, "GET", url, rl)
+        if s in (404,):
+            return
+        if s in (401, 403) and not body:
+            # Forbidden/unauthorized is still a real finding (path exists, blocked)
+            store.add_endpoint(url, source="Wordlist_Probe", score=Conf.LOW)
+            emit.info(f"[Wordlist] {s} (access-controlled) -> {url}")
+            found += 1
+            return
+        if s not in (200, 201, 204, 206, 301, 302, 307, 308):
+            return
+        if body:
+            if canary_hash:
+                probe_hash = hashlib.md5(body.encode(errors="ignore")).hexdigest()
+                if probe_hash == canary_hash:
+                    return
+            ct = ((hdrs or {}).get("content-type", "") or "").lower()
+            if canary_is_html and canary_len > 200 and "text/html" in ct:
+                if canary_len > 0 and abs(len(body) - canary_len) / canary_len < 0.03:
+                    return
+            if Extractor.is_soft_404(body, s):
+                return
+        store.add_endpoint(url, source="Wordlist_Probe", score=Conf.HIGH)
+        emit.warn_sev(f"[Wordlist] {s} -> {url}", "MEDIUM")
+        found += 1
+
+    await asyncio.gather(*(_probe_word(w) for w in words))
+    emit.always_info(f"[Wordlist] Done — {found} hit(s) found from {len(words)} path(s)")
 
 
                                                                         
@@ -6246,13 +6142,51 @@ class Spider:
         ct  = (headers.get("Content-Type","") or headers.get("content-type","")).lower()
         body_lo = body.lower()
 
-                                                                          
         raw_srv = headers.get("Server") or headers.get("server", "")
         raw_xpb = headers.get("X-Powered-By") or headers.get("x-powered-by", "")
         raw_asp = headers.get("X-AspNet-Version") or headers.get("x-aspnet-version", "")
         if raw_srv: tech.add(f"Server: {raw_srv}")
         if raw_xpb: tech.add(f"X-Powered-By: {raw_xpb}")
         if raw_asp: tech.add(f"X-AspNet-Version: {raw_asp}")
+
+        for raw_hdr in (raw_srv, raw_xpb):
+            m = re.match(r'^([A-Za-z][A-Za-z0-9_\-\.]*)\/([0-9][A-Za-z0-9_\-\.]*)', raw_hdr)
+            if m:
+                name, ver = m.group(1), m.group(2)
+                if re.match(r'^\d', ver):
+                    tech.add(f"{name} Version: {ver}")
+
+        set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie", "")
+        if isinstance(set_cookie, list):
+            cookie_names = " ".join(set_cookie)
+        else:
+            cookie_names = set_cookie or ""
+        cookie_names_lo = cookie_names.lower()
+        _COOKIE_SIGNATURES = {
+            "phpsessid":            "PHP",
+            "jsessionid":           "Java/JSP (Tomcat or similar)",
+            "laravel_session":      "Laravel",
+            "connect.sid":          "Express/Node.js",
+            "ci_session":           "CodeIgniter",
+            "django_sessionid":     "Django",
+            "wordpress_logged_in":  "WordPress",
+            "wordpress_sec":        "WordPress",
+            "wp-settings":          "WordPress",
+            "_csrf":                "CSRF-protected framework (generic)",
+            "arraffinity":          "Azure App Service",
+            "cfduid":               "Cloudflare",
+            "__cf_bm":              "Cloudflare Bot Management",
+            "rack.session":         "Ruby/Rack (Rails or Sinatra)",
+            "_rails_session":       "Ruby on Rails",
+            "flask_session":        "Flask",
+            "next-auth.session-token": "Next.js (NextAuth)",
+            "sails.sid":            "Sails.js",
+            "symfony":              "Symfony",
+            "grails_remember_me":   "Grails",
+        }
+        for cookie_key, fw_name in _COOKIE_SIGNATURES.items():
+            if cookie_key in cookie_names_lo:
+                tech.add(f"Cookie: {fw_name}")
 
                                                                            
         if "nginx"        in srv:                               tech.add("Nginx")
@@ -6577,6 +6511,22 @@ class Spider:
                 continue
             self.store.add_endpoint(full, method=method, source="Form", score=Conf.HIGH)
             self.store.add_query_params(full)
+
+            # Form action resolves to a different URL than the page it's shown on
+            # (e.g. /admin shows a login form whose action="index.php?").
+            # Attach the same params to the display page too, and record the link.
+            if full != url and inputs:
+                self.store.add_endpoint(url, method="GET", source="Form_Page", score=Conf.HIGH)
+                _page_key = self.store._key(url, "GET")
+                if _page_key in self.store.endpoints:
+                    _page_ep = self.store.endpoints[_page_key]
+                    _page_ep.setdefault("params", {}).setdefault("form", [])
+                    for _p in inputs:
+                        if _p and _p not in _page_ep["params"]["form"]:
+                            _page_ep["params"]["form"].append(_p)
+                    _page_ep["_form_action_target"] = full
+                    self.emit.info("[Form-Redirect] %s shows login/form that posts to %s" % (url, full))
+
             _fkey = self.store._key(full, method)
             if _fkey in self.store.endpoints:
                 _ep = self.store.endpoints[_fkey]
@@ -6975,11 +6925,13 @@ class Spider:
                     await _dns.run()
                 if self.cfg.enable_graphql:
                     await probe_graphql(session, self.target, self.store, self.emit, self.rl)
-                if not self.is_ip_target:
+                if not self.is_ip_target and self.cfg.enable_subdomain_enum:
                     self.emit.animator.update(0, "Recon Subdomains")
                     _subenum = SubdomainEnumerator(self.target, self.store,
                                                    self.queue, self.emit, self.is_valid)
                     await _subenum.run()
+                elif not self.is_ip_target:
+                    self.emit.always_info("[Subdomains] Skipped (use --subdomains to enable)")
 
                 self.emit.animator.update(0, "Recon robots.txt")
                 robots = RobotsParser(session, self.target, self.store, self.queue,
@@ -7003,6 +6955,10 @@ class Spider:
                     probe_sensitive_files(session, self.target, self.store, self.emit, self.rl),
                     probe_admin_panels(session, self.target, self.store, self.emit, self.rl),
                 )
+
+                if self.cfg.wordlist:
+                    self.emit.animator.update(0, "Recon Wordlist Brute Force")
+                    await probe_wordlist(session, self.target, self.store, self.emit, self.rl, self.cfg.wordlist)
 
                 if not self.is_ip_target:
                     self.emit.animator.update(0, "Recon Wayback")
@@ -7064,37 +7020,42 @@ class Spider:
                             if after > before:
                                 self.emit.always_success(f"[Sync] Synchronized {after-before} cookies from SPA session")
                 _t_recon = time.time() - _t_phase_start
-                _t_phase_start = time.time()
-                self.emit.always_info(
-                    f"[Spider] Crawl started — depth={self.cfg.max_depth}, "
-                    f"concurrency={self.cfg.concurrency}, "
-                    f"auth={'yes' if self.cookies or self.extra_headers else 'no'}, "
-                    f"seed={self.queue.qsize()} URLs")
-                
-                                                      
-                self.emit.animator.update(0, "Crawling Target")
-                
-                workers = [asyncio.create_task(self._worker(session, i, crawl_delay))
-                           for i in range(self.cfg.concurrency)]
-                
-                                                        
-                async def _update_crawl_status():
-                    while self.emit.animator.active:
-                        self.emit.animator.update(len(self.visited), f"Crawling: {len(self.visited)} URLs")
-                        await asyncio.sleep(1.0)
-                
-                status_task = asyncio.create_task(_update_crawl_status())
-                
-                await self.queue.join()
-                
-                for w in workers: w.cancel()
-                status_task.cancel()
-                self.emit.animator.stop_anim()
-                
-                await asyncio.gather(*workers, return_exceptions=True)
+                if self.cfg.no_crawl:
+                    self.emit.always_info(
+                        f"[Spider] --no-crawl: skipping BFS crawl ({self.queue.qsize()} queued URL(s) "
+                        f"recorded via recon only, not fetched/parsed)")
+                    _t_crawl = 0.0
+                    _t_phase_start = time.time()
+                else:
+                    _t_phase_start = time.time()
+                    self.emit.always_info(
+                        f"[Spider] Crawl started — depth={self.cfg.max_depth}, "
+                        f"concurrency={self.cfg.concurrency}, "
+                        f"auth={'yes' if self.cookies or self.extra_headers else 'no'}, "
+                        f"seed={self.queue.qsize()} URLs")
 
-                _t_crawl = time.time() - _t_phase_start
-                _t_phase_start = time.time()
+                    self.emit.animator.update(0, "Crawling Target")
+
+                    workers = [asyncio.create_task(self._worker(session, i, crawl_delay))
+                               for i in range(self.cfg.concurrency)]
+
+                    async def _update_crawl_status():
+                        while self.emit.animator.active:
+                            self.emit.animator.update(len(self.visited), f"Crawling: {len(self.visited)} URLs")
+                            await asyncio.sleep(1.0)
+
+                    status_task = asyncio.create_task(_update_crawl_status())
+
+                    await self.queue.join()
+
+                    for w in workers: w.cancel()
+                    status_task.cancel()
+                    self.emit.animator.stop_anim()
+
+                    await asyncio.gather(*workers, return_exceptions=True)
+
+                    _t_crawl = time.time() - _t_phase_start
+                    _t_phase_start = time.time()
                                               
                 if self.cfg.enable_probing:
                     prober = IntelligentProber(session, self.store, self.emit, self.rl, self.cfg)
@@ -7123,7 +7084,6 @@ class Spider:
                 classify_admin_endpoints(self.store)
                 classify_auth_endpoints(self.store)
                 classify_idor_candidates(self.store)
-                score_injection_candidates(self.store)
                 _flag_upload_endpoints(self.store)
                                                               
                 self.emit.animator.start_anim("ASM: JS SCA Analysis")
@@ -7425,14 +7385,21 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Screenshots of key endpoints. Preset: all, standard, blocked, errors, api, admin, or regex")
     flags.add_argument("--no-filter",     "-F", action="store_true",
                        help="Disable noise path filter (include VCS browser UI, CDN paths, socket.io in output)")
+    flags.add_argument("--no-crawl",      "-N", action="store_true",
+                       help="Skip BFS link crawling — run only recon/probe modules "
+                            "(robots, sitemap, admin probe, sensitive files, wordlist, subdomains, wayback)")
 
     scope = p.add_argument_group(f"{C.CY}Scope{C.RST}")
+    scope.add_argument("--subdomains",        action="store_true",
+                       help="Enable subdomain enumeration via certificate transparency logs")
     scope.add_argument("--follow-subdomains", "-S", action="store_true",
-                       help="Crawl discovered subdomains (CRT.sh) within the base domain")
+                       help="Crawl discovered subdomains within the base domain")
     scope.add_argument("--follow-redirects",  "-r", action="store_true",
                        help="Follow cross-host redirects and add the destination host to scope")
     scope.add_argument("--scope", type=str, default=None, metavar="HOSTS",
                        help="Comma-separated extra hosts to include in scope  e.g. api.target.com,cdn.target.com")
+    scope.add_argument("--wordlist", type=str, default=None, metavar="FILE",
+                       help="Path to a directory/file wordlist for endpoint discovery")
 
     util = p.add_argument_group(f"{C.CY}Utilities{C.RST}")
     util.add_argument("--diff",    "-D", type=str, default=None, metavar="OLD_REPORT",
@@ -7546,6 +7513,9 @@ def main():
         output_file     = args.out,
         follow_subdomains = args.follow_subdomains,
         follow_redirects  = args.follow_redirects,
+        enable_subdomain_enum = args.subdomains,
+        wordlist          = args.wordlist,
+        no_crawl          = args.no_crawl,
         extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
                             if args.scope else [],
     )

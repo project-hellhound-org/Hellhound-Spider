@@ -1,0 +1,204 @@
+.TH SPIDER 1 "2026-06-13" "Hellhound Spider v13.10" "User Commands"
+.SH NAME
+spider \- SPA and non-SPA web crawler, endpoint discoverer, and attack-surface mapper
+.SH SYNOPSIS
+.B spider
+[\fIOPTIONS\fR] \fITARGET\fR
+.SH DESCRIPTION
+.B spider
+crawls a target web application, discovers endpoints, forms, parameters,
+JavaScript-embedded routes, archived URLs, and exposed configuration or
+admin interfaces, then classifies the discovered attack surface (admin
+panels, IDOR candidates, authentication endpoints, file upload endpoints,
+legacy/deprecated paths, unauthenticated APIs, and sensitive data sources).
+.PP
+.B spider
+deliberately does not attempt to classify endpoints as SQL injection,
+command injection, or SSRF candidates based on parameter names alone.
+Such heuristics are unreliable and produce a high rate of false positives;
+identifying real injection points is left to the operator and to dedicated
+testing tools. The parameter map in the report shows every discovered
+parameter per endpoint so this assessment can be made manually.
+.PP
+It combines passive crawling, robots.txt and sitemap parsing, JavaScript
+analysis, headless-browser SPA rendering, certificate-transparency based
+subdomain discovery, Wayback Machine history mining, and active probing
+(admin panels, sensitive files, GraphQL/OpenAPI introspection, and
+user-supplied wordlists) into a single pass, producing a structured JSON
+report and a human-readable summary.
+.PP
+\fITARGET\fR is the base URL of the application to scan, e.g.
+.IR https://example.com .
+.SH OPTIONS
+.SS "Scan Options"
+.TP
+.BR \-d ", " \-\-depth " " \fIN\fR
+Maximum crawl depth (default: 4).
+.TP
+.BR \-W ", " \-\-delay " " \fIS\fR
+Fixed delay between requests per host, in seconds (default: 0, adaptive).
+.TP
+.BR \-c ", " \-\-concurrency " " \fIN\fR
+Number of concurrent crawl workers (default: 12).
+.TP
+.BR \-t ", " \-\-timeout " " \fIS\fR
+Per-request timeout in seconds (default: 15).
+.TP
+.BR \-v ", " \-\-verbose
+Show all discovery logs, including low-confidence and informational events.
+.SS "Authentication"
+.TP
+.BR \-C ", " \-\-cookie " " \fICOOKIE\fR
+Cookie string, dict-style string, or path to a cookie file. Used to scan
+authenticated areas of the application.
+.TP
+.BR \-a ", " \-\-auth " " \fIHEADER\fR
+Authorization header value, e.g. \fB"Bearer eyJ..."\fR.
+.TP
+.BR \-u ", " \-\-basic\-auth " " \fIUSER:PASS\fR
+HTTP Basic authentication credentials, curl-style, e.g.
+\fBadmin:password\fR.
+.SS "Output"
+.TP
+.BR \-o ", " \-\-out " " \fIFILE\fR
+Write an additional copy of the report to \fIFILE\fR. A JSON report is
+always saved automatically regardless of this option.
+.TP
+.BR \-f ", " \-\-format " " "{json,jsonl,csv,burp,urls,nuclei}"
+Extra output format for the report written to \fB\-\-out\fR
+(default: \fBjson\fR).
+.SS "Feature Flags"
+.TP
+.BR \-P ", " \-\-no\-playwright
+Disable headless browser SPA scanning. Without this flag, \fBspider\fR
+attempts patchright, then playwright-stealth, then falls back to manual
+JavaScript analysis.
+.TP
+.BR \-p ", " \-\-no\-probing
+Disable the intelligent active-probing phase (admin panels, sensitive
+files, GraphQL, OpenAPI).
+.TP
+.BR \-I ", " \-\-spa\-interact
+Enable SPA form filling and button clicking during headless browser
+scanning. Only use against targets you are authorized to test, as this
+performs active interactions with the application.
+.TP
+.BR \-R ", " \-\-no\-cors
+Disable CORS misconfiguration checks.
+.TP
+.BR \-G ", " \-\-no\-graphql
+Disable GraphQL introspection probing.
+.TP
+.BR \-O ", " \-\-no\-openapi
+Disable OpenAPI / Swagger discovery.
+.TP
+.BR \-x ", " \-\-extract
+Enable passive data extraction of emails, IP addresses, and cloud storage
+bucket references found in crawled content.
+.TP
+.BR \-s ", " \-\-screenshot " " [\fIPRESET\fR]
+Capture screenshots of key endpoints. \fIPRESET\fR may be one of:
+\fBall\fR, \fBstandard\fR, \fBblocked\fR, \fBerrors\fR, \fBapi\fR,
+\fBadmin\fR, or a regular expression matching endpoint URLs. Defaults to
+\fBstandard\fR if no preset is given.
+.TP
+.BR \-F ", " \-\-no\-filter
+Disable the noise-path filter, including VCS browser UI paths, CDN asset
+paths, and socket.io endpoints in the output.
+.TP
+.BR \-N ", " \-\-no\-crawl
+Skip BFS link crawling entirely. Only the recon and probe modules run:
+robots.txt and sitemap parsing, admin panel probing, sensitive file
+probing, wordlist-based discovery (\fB\-\-wordlist\fR), subdomain
+enumeration (\fB\-\-subdomains\fR), and Wayback Machine history mining.
+Useful for fast, targeted reconnaissance without traversing the site's
+link graph.
+.SS "Scope"
+.TP
+.BR \-\-subdomains
+Enable subdomain enumeration via certificate transparency logs.
+.TP
+.BR \-S ", " \-\-follow\-subdomains
+Crawl discovered subdomains within the base domain.
+.TP
+.BR \-r ", " \-\-follow\-redirects
+Follow cross-host redirects and add the destination host to scope.
+.TP
+.BR \-\-scope " " \fIHOSTS\fR
+Comma-separated list of additional hosts to include in scope, e.g.
+\fBapi.target.com,cdn.target.com\fR.
+.TP
+.BR \-\-wordlist " " \fIFILE\fR
+Path to a newline-separated wordlist of directory and file names. Each
+entry is requested against the target; responses are filtered through the
+same soft-404 and canary-fingerprint logic used for sensitive-file
+detection, so only meaningful hits are reported. Combine with
+\fB\-\-no\-crawl\fR for a discovery-only pass.
+.SS "Utilities"
+.TP
+.BR \-D ", " \-\-diff " " \fIOLD_REPORT\fR
+Diff the results of this scan against a previous JSON report, highlighting
+new, removed, and changed endpoints.
+.TP
+.BR \-H ", " \-\-har " " \fIHAR_FILE\fR
+Import a browser HAR session file to seed the scan with authenticated or
+otherwise hard-to-reach requests captured during manual browsing.
+.TP
+.BR \-\-upgrade
+Upgrade \fBspider\fR to the latest version.
+.SS "General"
+.TP
+.BR \-h ", " \-\-help
+Show a summary of command-line options and exit.
+.SH OUTPUT
+.B spider
+always writes a JSON report to the working directory, named after the
+target host and scan timestamp. The on-screen summary includes:
+.PP
+.RS
+.IP \(bu 3
+response headers and missing security headers
+.IP \(bu 3
+TLS/certificate findings
+.IP \(bu 3
+detected technology stack
+.IP \(bu 3
+robots.txt disallowed paths and discovered endpoints
+.IP \(bu 3
+a parameter map of query, form, and runtime parameters per endpoint
+.IP \(bu 3
+authentication-walled endpoints
+.IP \(bu 3
+intelligence classifications: admin panels, IDOR candidates, file upload
+endpoints, authentication endpoints, unauthenticated APIs, sensitive data
+sources, and legacy/deprecated endpoints
+.RE
+.SH EXAMPLES
+.TP
+Scan a target with default settings:
+.B spider http://target.example
+.TP
+Authenticated scan using a session cookie:
+.B spider \-C "PHPSESSID=abc123" http://target.example
+.TP
+Recon-only pass with a custom wordlist, no link crawling:
+.B spider \-N \-\-wordlist ~/wordlists/common.txt http://target.example
+.TP
+Full reconnaissance including subdomain enumeration, no crawl:
+.B spider \-N \-\-subdomains \-\-wordlist ~/wordlists/common.txt http://target.example
+.TP
+SPA scan with headless browser interaction enabled:
+.B spider \-I https://app.example
+.TP
+Import a HAR capture and diff against a previous report:
+.B spider \-H session.har \-D previous_report.json http://target.example
+.SH FILES
+.TP
+.I spider_<host>_<timestamp>.json
+Auto-saved JSON report for each scan.
+.SH AUTHOR
+Hellhound Spider is part of Project Hellhound
+.RI ( https://github.com/project-hellhound-org ).
+.SH SEE ALSO
+.BR curl (1),
+.BR nmap (1)

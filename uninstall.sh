@@ -35,6 +35,36 @@ for LOC in "${LOCATIONS[@]}"; do
     fi
 done
 
+# ── Remove man page ──────────────────────────────────────────────────────────
+MAN_LOCATIONS=(
+    "/usr/local/share/man/man1/spider.1"
+    "/usr/share/man/man1/spider.1"
+    "$HOME/.local/share/man/man1/spider.1"
+)
+
+for MLOC in "${MAN_LOCATIONS[@]}"; do
+    if [ -f "$MLOC" ]; then
+        info "Removing man page $MLOC..."
+        if [ -w "$(dirname "$MLOC")" ]; then
+            rm -f "$MLOC"
+        else
+            sudo rm -f "$MLOC"
+        fi
+        success "Removed $MLOC"
+    fi
+done
+
+# Refresh man-db cache if available
+if command -v mandb &>/dev/null; then
+    if [ -w "/usr/local/share/man" ]; then
+        mandb -q 2>/dev/null || true
+    elif sudo -n true 2>/dev/null; then
+        sudo mandb -q 2>/dev/null || true
+    else
+        mandb -q 2>/dev/null || true
+    fi
+fi
+
 # ── Cleanup Virtual Environment ──────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -d "$SCRIPT_DIR/.venv" ]; then

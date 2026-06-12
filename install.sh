@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-#  Hellhound Spider — Installer (v13.5)
+#  Hellhound Spider — Installer (v13.10)
 #  Installs the `spider` command with an isolated virtual environment.
 # ─────────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ start_animation() {
     local label="$1"
     stop_animation
     
-    # Ultra-Wide Animator matching spider.py v13.5 spec
+    # Ultra-Wide Animator matching spider.py v13.10 spec
     python3 -c "
 import math, time, sys
 label = \"$label\"
@@ -231,6 +231,59 @@ success "Installed to $INSTALL_PATH"
 if [ ! -x "$INSTALL_PATH" ]; then
     warn "WARNING: $INSTALL_PATH exists but is not executable by the current user."
     warn "Try:  sudo chmod 755 $INSTALL_PATH"
+fi
+
+# ── Install man page ──────────────────────────────────────────────────────────
+MANPAGE_SRC="$SCRIPT_DIR/man/spider.1"
+if [ -f "$MANPAGE_SRC" ]; then
+    if [ -w "/usr/local/share/man/man1" ]; then
+        MAN_DIR="/usr/local/share/man/man1"
+        cp "$MANPAGE_SRC" "$MAN_DIR/spider.1"
+        chmod 644 "$MAN_DIR/spider.1"
+    elif sudo -n true 2>/dev/null; then
+        MAN_DIR="/usr/local/share/man/man1"
+        sudo mkdir -p "$MAN_DIR"
+        sudo cp "$MANPAGE_SRC" "$MAN_DIR/spider.1"
+        sudo chmod 644 "$MAN_DIR/spider.1"
+    else
+        MAN_DIR="$HOME/.local/share/man/man1"
+        mkdir -p "$MAN_DIR"
+        cp "$MANPAGE_SRC" "$MAN_DIR/spider.1"
+        chmod 644 "$MAN_DIR/spider.1"
+
+        # Ensure MANPATH includes the user-local man directory
+        MANPATH_LINE='export MANPATH="$HOME/.local/share/man:$MANPATH"'
+        MANPATH_SET=false
+        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            if [ -f "$rc" ] && grep -qF '.local/share/man' "$rc"; then
+                MANPATH_SET=true
+                break
+            fi
+        done
+        if [ "$MANPATH_SET" = false ]; then
+            warn "~/.local/share/man is not in your MANPATH"
+            echo ""
+            echo "  Add this line to your ~/.bashrc or ~/.zshrc:"
+            echo ""
+            echo -e "    ${GRN}${MANPATH_LINE}${RST}"
+            echo ""
+        fi
+    fi
+
+    # Refresh man-db cache if mandb is available
+    if command -v mandb &>/dev/null; then
+        if [ -w "/usr/local/share/man" ]; then
+            mandb -q 2>/dev/null || true
+        elif sudo -n true 2>/dev/null; then
+            sudo mandb -q 2>/dev/null || true
+        else
+            mandb -q 2>/dev/null || true
+        fi
+    else
+        warn "mandb not found — 'man spider' may not work until man-db is installed"
+    fi
+
+    success "Installed man page — run 'man spider' for usage details"
 fi
 
 # ── PATH check for ~/.local/bin ────────────────────────────────────────────────

@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.8-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.10-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -21,7 +21,7 @@
 
 Hellhound Spider crawls a web application and produces a complete map of every endpoint, parameter, and security surface it can reach. The output is a structured JSON report — sorted by confidence, with parameters grouped by source, ready to feed directly into attack agents or import into Burp Suite.
 
-It runs two crawl engines in parallel: async HTTP workers for speed, and headless Chromium for JavaScript-heavy SPAs. For SPAs it intercepts live XHR and fetch calls as the browser actually makes them — including POST body parameters and response IDs. When the crawl finishes, it classifies every endpoint automatically and scores injection candidates so downstream agents start with context, not cold discovery.
+It runs two crawl engines in parallel: async HTTP workers for speed, and headless Chromium for JavaScript-heavy SPAs. For SPAs it intercepts live XHR and fetch calls as the browser actually makes them — including POST body parameters and response IDs. When the crawl finishes, it classifies every endpoint automatically so downstream agents start with context, not cold discovery.
 
 ---
 
@@ -42,6 +42,8 @@ The installer creates an isolated virtual environment (`.venv`) and a system-wid
 spider https://target.com
 ```
 
+A man page is also installed — run `man spider` for the full reference.
+
 ### Windows
 
 ```bash
@@ -61,20 +63,18 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.8 — Scoping & Sitemap Patch
+## v13.10 — Recon Overhaul
 
-v13.8 addresses edge-case scoping bugs with sitemaps and Wayback historical URLs, while resolving robots.txt visual representation in the CLI.
+v13.10 restructures the reconnaissance pipeline for precision and operator control — subdomain enumeration is now opt-in, a new wordlist brute-force engine ships with soft-404 filtering, and the unreliable injection-candidate scoring heuristic has been removed entirely.
 
-### New in v13.8
+### New in v13.10
 
-- **Sitemap & Wayback www Scoping Fix** — Strips `www.` subdomains when matching scoped hostnames, ensuring correct parsing of redirected sitemaps and historical Wayback URLs.
-- **Robots.txt Sitemap Reference Display** — Visually maps and shows sitemap references inside the robots tree.
-- **CLI Print Alignment** — Corrects terminal formatting alignment when reporting discovered endpoints.
-- **IP Target Optimization** — Skips DNS, subdomain, and Wayback recon on IP targets.
-- **Parallel Active Probing** — Executes sensitive file probing and admin panel discovery concurrently for faster scans.
-- **Update Checking Engine** — Automatically fetches and alerts you about remote git repository updates upon scan completion.
-- **Basic Authentication Support** — Added `--basic-auth` / `-u` parameter for HTTP basic authentication.
-- **Sanitized Cookie Inputs** — Warns and filters out non-cookie authentication keys accidentally passed to the `--cookie` flag.
+- **No-Crawl Mode** (`--no-crawl` / `-N`) — Run only the recon and probing modules (robots, sitemap, admin panels, sensitive files, wordlist, subdomains, Wayback) without BFS link crawling. Useful for fast, targeted reconnaissance.
+- **Wordlist Brute Force** (`--wordlist FILE`) — Directory and file discovery using a user-supplied wordlist. Responses are filtered through the same canary-fingerprint and soft-404 logic used by the sensitive-file probe, so noisy SPA/wildcard-200 targets don't flood results.
+- **Opt-in Subdomain Enumeration** (`--subdomains`) — Certificate transparency subdomain enumeration is now opt-in instead of running by default, reducing scan noise on targets where subdomains are out of scope.
+- **Admin Probe Deduplication** — Deduplicates overlapping admin panel paths (e.g. `/admin` and `/admin/`) before probing, eliminating redundant requests.
+- **Injection Scoring Removed** — Dropped the heuristic SQLi/CMDi/SSRF candidate scoring that relied on parameter-name pattern matching. This produced a high false-positive rate; identifying real injection points is left to the operator and dedicated testing tools.
+- **Man Page** — `man spider` is now available after installation for the full command reference.
 
 ---
 
@@ -155,15 +155,18 @@ spider <target> [options]
 | `--extract` | `-x` | Enable passive data extraction (emails, IPs, buckets) |
 | `--screenshot` | `-s` | Capture screenshots. Preset: `all`, `standard`, `blocked`, `errors`, `api`, `admin`, or custom regex |
 | `--no-filter` | `-F` | Disable noise path filter (include repo-browser and CDN paths) |
+| `--no-crawl` | `-N` | Skip BFS crawling — run only recon and probe modules |
 | `--har` | | Seed crawl from a browser-exported HAR file |
 
 ### Scope
 
 | Flag | Short | Description |
 |---|---|---|
+| `--subdomains` | | Enable subdomain enumeration via certificate transparency logs |
 | `--follow-subdomains` | `-S` | Crawl discovered subdomains within the base domain |
 | `--follow-redirects` | `-r` | Follow cross-host redirects and add destination to scope |
 | `--scope` | | Comma-separated extra hosts to include in scope |
+| `--wordlist` | | Path to a directory/file wordlist for endpoint discovery |
 
 ### Utilities
 
