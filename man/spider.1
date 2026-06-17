@@ -6,26 +6,34 @@ spider \- SPA and non-SPA web crawler, endpoint discoverer, and attack-surface m
 [\fIOPTIONS\fR] \fITARGET\fR
 .SH DESCRIPTION
 .B spider
-crawls a target web application, discovers endpoints, forms, parameters,
-JavaScript-embedded routes, archived URLs, and exposed configuration or
-admin interfaces, then classifies the discovered attack surface (admin
-panels, IDOR candidates, authentication endpoints, file upload endpoints,
-legacy/deprecated paths, unauthenticated APIs, and sensitive data sources).
+is a web application crawler and attack-surface mapper for offensive
+security assessments, bug bounty hunting, and CTF challenges. It
+performs a full-spectrum reconnaissance pass against a target, combining
+passive crawling, active probing, and multi-source intelligence gathering
+into a single run.
 .PP
+During a scan,
 .B spider
-deliberately does not attempt to classify endpoints as SQL injection,
-command injection, or SSRF candidates based on parameter names alone.
-Such heuristics are unreliable and produce a high rate of false positives;
-identifying real injection points is left to the operator and to dedicated
-testing tools. The parameter map in the report shows every discovered
-parameter per endpoint so this assessment can be made manually.
+follows links, parses forms and JavaScript, renders single-page
+applications via a headless browser, mines the Wayback Machine and
+certificate transparency logs, and probes for admin panels, sensitive
+files, GraphQL and OpenAPI endpoints, and directories from a
+user-supplied wordlist. Every discovered URL is recorded with its HTTP
+method, confidence level, and observed parameters.
 .PP
-It combines passive crawling, robots.txt and sitemap parsing, JavaScript
-analysis, headless-browser SPA rendering, certificate-transparency based
-subdomain discovery, Wayback Machine history mining, and active probing
-(admin panels, sensitive files, GraphQL/OpenAPI introspection, and
-user-supplied wordlists) into a single pass, producing a structured JSON
-report and a human-readable summary.
+The output includes a structured JSON report and a colour-coded
+terminal summary covering: response headers and missing security
+controls, TLS posture, detected technology stack, robots.txt and
+sitemap findings, Wayback-archived endpoints, HTML and JS comment leaks,
+a full parameter map per endpoint, authentication-walled paths, security
+findings (GraphQL introspection, CORS, source maps, exposed secrets),
+and intelligence classifications (admin panels, authentication
+endpoints, unauthenticated APIs, sensitive data sources, legacy
+interfaces, and file upload points). When a CTF flag format is supplied
+via
+.BR \-K ,
+matched flags are surfaced in a dedicated section at the top of the
+findings.
 .PP
 \fITARGET\fR is the base URL of the application to scan, e.g.
 .IR https://example.com .
@@ -134,6 +142,13 @@ entry is requested against the target; responses are filtered through the
 same soft-404 and canary-fingerprint logic used for sensitive-file
 detection, so only meaningful hits are reported. Combine with
 \fB\-\-no\-crawl\fR for a discovery-only pass.
+.SS "CTF"
+.TP
+.BR \-K ", " \-\-ctf\-flag " " \fITEMPLATE\fR
+Flag format template to scan for across all crawled content (HTML, JS,
+CSS, JSON responses, error pages, and comments). Use \fB{}\fR as the
+placeholder for the flag body. Multiple formats may be given
+comma-separated, e.g. \fBflag{},ctf{}\fR.
 .SS "Utilities"
 .TP
 .BR \-D ", " \-\-diff " " \fIOLD_REPORT\fR

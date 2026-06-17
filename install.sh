@@ -164,6 +164,26 @@ if [[ "$INSTALL_PLAYWRIGHT" =~ ^[Yy]$ ]]; then
     success "Patchright + Chromium installed (bot-bypass ready)"
 fi
 
+# ── WhatWeb (System Technology Fingerprinter) ─────────────────────────
+if ! command -v whatweb &>/dev/null; then
+    stop_animation
+    if command -v apt-get &>/dev/null; then
+        info "Installing WhatWeb technology fingerprinter..."
+        if [ "$EUID" -eq 0 ]; then
+            apt-get update -qq && apt-get install -y -qq whatweb &>/dev/null || warn "Failed to install WhatWeb automatically."
+        elif command -v sudo &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq whatweb &>/dev/null || warn "Failed to install WhatWeb automatically."
+        else
+            warn "WhatWeb is missing and could not be installed without root/sudo. Please run: apt install whatweb"
+        fi
+    else
+        warn "WhatWeb is missing. Please install it manually for technology fingerprinting."
+    fi
+    if command -v whatweb &>/dev/null; then
+        success "WhatWeb technology fingerprinter installed"
+    fi
+fi
+
 # ── Install the spider command ─────────────────────────────────────────────────
 start_animation "FINALIZING DEPLOYMENT"
 

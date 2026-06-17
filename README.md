@@ -72,6 +72,9 @@ v13.10 restructures the reconnaissance pipeline for precision and operator contr
 - **No-Crawl Mode** (`--no-crawl` / `-N`) — Run only the recon and probing modules (robots, sitemap, admin panels, sensitive files, wordlist, subdomains, Wayback) without BFS link crawling. Useful for fast, targeted reconnaissance.
 - **Wordlist Brute Force** (`--wordlist FILE`) — Directory and file discovery using a user-supplied wordlist. Responses are filtered through the same canary-fingerprint and soft-404 logic used by the sensitive-file probe, so noisy SPA/wildcard-200 targets don't flood results.
 - **Opt-in Subdomain Enumeration** (`--subdomains`) — Certificate transparency subdomain enumeration is now opt-in instead of running by default, reducing scan noise on targets where subdomains are out of scope.
+- **WhatWeb Technology Analysis** — Automatically integrates WhatWeb (runs concurrently with TLS checks) to identify and categorize the server runtime, CMS, frameworks, JS libraries, CDNs, and cookies. Visualized using a rich, color-coded badge category system.
+- **Bot-Bypass Browser Engine** — Leverages Playwright for standard SPA analysis and automatically falls back to Patchright for stealthy bot-bypass when meeting Cloudflare or other WAF challenges.
+- **CTF Flag Mining** (`--ctf-flag TEMPLATE` / `-K`) — Auto-scans all processed pages, JavaScript files, CSS comments, HTML data attributes, API responses, and error page traces for custom flag templates. Use `{}` as a wildcard body placeholder.
 - **Admin Probe Deduplication** — Deduplicates overlapping admin panel paths (e.g. `/admin` and `/admin/`) before probing, eliminating redundant requests.
 - **Injection Scoring Removed** — Dropped the heuristic SQLi/CMDi/SSRF candidate scoring that relied on parameter-name pattern matching. This produced a high false-positive rate; identifying real injection points is left to the operator and dedicated testing tools.
 - **Man Page** — `man spider` is now available after installation for the full command reference.
@@ -168,6 +171,12 @@ spider <target> [options]
 | `--scope` | | Comma-separated extra hosts to include in scope |
 | `--wordlist` | | Path to a directory/file wordlist for endpoint discovery |
 
+### CTF
+
+| Flag | Short | Description |
+|---|---|---|
+| `--ctf-flag TEMPLATE` | `-K` | Flag format to scan for across all content (e.g. `HELLCORP{}`, `HTB{}`). Placeholder `{}` expands to flag body. Supports comma-separated templates. |
+
 ### Utilities
 
 | Flag | Short | Description |
@@ -221,6 +230,9 @@ spider https://target.com --har session.har
 
 # Combine HAR seed + extraction + screenshots
 spider https://target.com --har session.har -x -s all
+
+# Scan and extract specific CTF flags from all source files and comments
+spider https://target.com --ctf-flag "HELLCORP{},FLAG{}"
 ```
 
 ---
@@ -256,6 +268,7 @@ Form fields (with type metadata: hidden, file, required), JS fetch/axios body ke
 - `aiohttp`, `beautifulsoup4`, `lxml`
 - Playwright + Chromium *(optional, for SPA targets)*
 - Patchright *(optional, automatic bot-bypass fallback when WAF blocks Playwright)*
+- WhatWeb *(optional, automatic system technology fingerprinter; installed by install.sh)*
 
 ---
 

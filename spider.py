@@ -15,6 +15,7 @@ import random
 import threading
 import subprocess
 import base64
+import shutil
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -698,15 +699,65 @@ def print_results(intel: dict, target: str, elapsed: float,
                 print(f"  {C.MG}◈{C.RST} {pill} {C.W}{wf.get('waf','')}{C.RST}")
 
                                                                         
-    tech_list = intel.get("tech_stack", [])
-    if tech_list:
-        emit.section("TECH STACK", orbital=True)
-        if nc:
-            print(f"    {' · '.join(tech_list)}")
-        else:
-            sep = f"  {C.GR}·{C.RST}  "
-            row = sep.join(f"{C.MG}{t}{C.RST}" for t in tech_list)
-            print(f"    {row}")
+    # ── TECH STACK — rich WhatWeb panel + internal fallback ──────────────────
+    whatweb_data = intel.get("whatweb_data", {})
+    tech_list    = intel.get("tech_stack", [])
+    # internal-only entries (exclude [WW] prefixed ones added by WhatWeb)
+    internal_tech = [t for t in tech_list if not t.startswith("[WW]")]
+
+    if whatweb_data or internal_tech:
+        total_plugins = sum(len(v) for v in whatweb_data.values()) if whatweb_data else len(internal_tech)
+        source_label  = "WhatWeb" if whatweb_data else "Internal Detection"
+        emit.section(f"TECH STACK  ({total_plugins} plugins · {source_label})", orbital=True)
+
+        if whatweb_data:
+            _ORDER = ["Server","Runtime","CDN/Cloud","CMS","Framework","JS Libs",
+                      "Analytics","Security","Generator","Cookies","GeoIP","Emails","Headers","Page","Other"]
+            _CAT_STYLE = {
+                "Server":     (C.R,   "SERVER   "),
+                "Runtime":    (C.O,   "RUNTIME  "),
+                "CMS":        (C.R,   "CMS      "),
+                "Framework":  (C.O,   "FRAMEWORK"),
+                "JS Libs":    (C.W,   "JS LIBS  "),
+                "Analytics":  (C.GL,  "ANALYTICS"),
+                "CDN/Cloud":  (C.O,   "CDN/CLOUD"),
+                "Security":   (C.G,   "SECURITY "),
+                "Generator":  (C.GL,  "GENERATOR"),
+                "GeoIP":      (C.GR,  "GEO/IP   "),
+                "Emails":     (C.GL,  "EMAIL    "),
+                "Cookies":    (C.GR,  "COOKIES  "),
+                "Headers":    (C.GR,  "HEADERS  "),
+                "Page":       (C.GR,  "PAGE     "),
+                "Other":      (C.GR,  "OTHER    "),
+            }
+            ordered_cats = _ORDER + [c for c in whatweb_data if c not in _ORDER]
+
+            for cat in ordered_cats:
+                entries = whatweb_data.get(cat)
+                if not entries:
+                    continue
+                col, label = _CAT_STYLE.get(cat, (C.GR, f"{cat:<9}"))
+                if nc:
+                    items_str = "  ·  ".join(e[1] if isinstance(e, (list,tuple)) else str(e) for e in entries)
+                    print(f"  [{label.strip():<9}]  {items_str}")
+                else:
+                    badge = f"{C.R}{C.B}[{C.RST}{col}{C.B}{label.strip()}{C.RST}{C.R}{C.B}]{C.RST}"
+                    pills = []
+                    for e in entries:
+                        icon, display = (e[0], e[1]) if isinstance(e, (list,tuple)) else ("·", str(e))
+                        pills.append(f"{col}{C.B}{icon}{C.RST} {col}{display}{C.RST}")
+                    pills_str = f"  {C.GR}│{C.RST}  ".join(pills)
+                    print(f"  {badge}  {pills_str}")
+
+        elif internal_tech:
+            # Fallback: internal detection only when WhatWeb produced nothing
+            if nc:
+                print(f"    {' · '.join(internal_tech)}")
+            else:
+                sep = f"  {C.GR}·{C.RST}  "
+                row = sep.join(f"{C.MG}{t}{C.RST}" for t in internal_tech)
+                if row:
+                    print(f"    {row}")
 
                                                                         
     dns_findings = intel.get("dns_findings", [])
@@ -801,6 +852,7 @@ def print_results(intel: dict, target: str, elapsed: float,
 
                                                                         
     comments = intel.get("comments", [])
+    cmt_filtered = []   # built below, displayed after SECURITY FINDINGS
     if comments:
                                                                              
         _HIGH_SIGNAL_KW = re.compile(
@@ -909,26 +961,8 @@ def print_results(intel: dict, target: str, elapsed: float,
                 })
 
             if cmt_filtered:
-                emit.section(f"HTML COMMENT LEAKS  ({len(cmt_filtered)} unique)", orbital=True)
-                _SRC_CAP = 5
-                for entry in cmt_filtered:
-                    display = entry["display"]
-                    shown   = entry["sources"][:_SRC_CAP]
-                    hidden  = len(entry["sources"]) - len(shown)
-                    qpaths  = entry.get("queued_paths", [])
-                    if nc:
-                        print(f"  [Comment] {display}")
-                        for src in shown: print(f"       └─ {src}")
-                        if hidden: print(f"       └─ (+{hidden} more pages)")
-                        for qp in qpaths: print(f"       ↳ [Queued] {qp}")
-                    else:
-                        print(f"  {C.R}●{C.RST} {C.Y}{display}{C.RST}")
-                        for src in shown:
-                            print(f"  {C.GR}    └─{C.RST} {C.GR}{src}{C.RST}")
-                        if hidden:
-                            print(f"  {C.GR}    └─{C.RST} {C.GR}(+{hidden} more pages){C.RST}")
-                        for qp in qpaths:
-                            print(f"  {C.CY}    ↳{C.RST} {C.CY}[Queued]{C.RST} {C.CYD}{qp}{C.RST}")
+                pass  # displayed later, after SECURITY FINDINGS
+
     if nc:
         print(f"  {'METHOD':<7}  {'CONFIDENCE':<10}  FLAGS  URL")
         print(f"  {'──'*34}")
@@ -1239,6 +1273,21 @@ def print_results(intel: dict, target: str, elapsed: float,
     oas        = intel.get("openapi", [])
     sourcemaps = intel.get("sourcemaps", [])
     if any([secrets, cors, gql, oas, sourcemaps]):
+        # ── CTF Flags ─────────────────────────────────────────────────────────
+        ctf_flags = [s for s in secrets if s.get("type") == "CTF_Flag"]
+        if ctf_flags:
+            emit.section(f"CTF FLAGS  ({len(ctf_flags)} found)", orbital=True)
+            for item in ctf_flags:
+                flag    = str(item.get("content", ""))
+                source  = item.get("source", "")
+                if nc:
+                    print(f"  [FLAG] {flag}")
+                    print(f"       └─ {source}")
+                else:
+                    print(f"  {C.BG_RED}{C.W} FLAG {C.RST} {C.G}{C.B}{flag}{C.RST}")
+                    print(f"  {C.GR}    └─{C.RST} {source}")
+                print()
+
         emit.section("SECURITY FINDINGS")
     for item in gql:
         emit.finding("GraphQL", "HIGH",
@@ -1258,6 +1307,8 @@ def print_results(intel: dict, target: str, elapsed: float,
         stype   = item.get("type", "Secret")
         content = str(item.get("content", ""))
         source  = item.get("source", "")
+        if stype == "CTF_Flag":
+            continue  # displayed in dedicated CTF FLAGS section above
         if stype in ("SecurityTxt_Comment_Leak", "SecurityTxt_Encryption_Key",
                      "SecurityTxt_Canonical_CrossDomain"):
             sev = "HIGH"
@@ -1324,8 +1375,37 @@ def print_results(intel: dict, target: str, elapsed: float,
                 val  = item["value"]
                 disp = val if len(val) <= 80 else val[:77] + "..."
                 emit.leader_row("  " + disp, item["source_url"])
+
+    # ── HTML Comment Leaks ───────────────────────────────────────────────────
+    if cmt_filtered:
+        emit.section(f"HTML COMMENT LEAKS  ({len(cmt_filtered)} unique)", orbital=True)
+        _SRC_CAP = 5
+        for i, entry in enumerate(cmt_filtered, 1):
+            display = entry["display"]
+            shown   = entry["sources"][:_SRC_CAP]
+            hidden  = len(entry["sources"]) - len(shown)
+            qpaths  = entry.get("queued_paths", [])
+            if nc:
+                print(f"  [{i}] {display}")
+                for src in shown:
+                    print(f"       └─ {src}")
+                if hidden:
+                    print(f"       └─ (+{hidden} more)")
+                for qp in qpaths:
+                    print(f"       ↳ [path] {qp}")
+            else:
+                sev_col = C.R if any(kw in display.lower() for kw in
+                    ("password","secret","token","key","credential","debug","bypass","hardcod","todo","fixme","do not commit")) else C.Y
+                print(f"  {sev_col}[{i}]{C.RST} {C.W}{display}{C.RST}")
+                for src in shown:
+                    print(f"  {C.GR}    └─{C.RST} {src}")
+                if hidden:
+                    print(f"  {C.GR}    └─{C.RST} {C.GR}(+{hidden} more pages){C.RST}")
+                for qp in qpaths:
+                    print(f"  {C.CY}    ↳{C.RST} {C.CYD}{qp}{C.RST}")
+            print()
+
     s_admin    = s.get("admin_panels", 0)
-    s_idor     = s.get("idor_candidates", 0)
     s_upload   = s.get("upload_endpoints", 0)
     s_auth_ep  = s.get("auth_endpoints", 0)
     s_unauth   = s.get("unauthenticated_apis", 0)
@@ -1333,7 +1413,6 @@ def print_results(intel: dict, target: str, elapsed: float,
     s_legacy   = s.get("legacy_endpoints", 0)
     intel_items = [
         (s_admin,    "Admin Panel(s)",           C.R),
-        (s_idor,     "IDOR Candidate(s)",        C.Y),
         (s_upload,   "File Upload(s)",           C.CY),
         (s_auth_ep,  "Auth Endpoint(s)",         C.MG),
         (s_unauth,   "Unauth API(s)",            C.R),
@@ -1355,8 +1434,6 @@ def print_results(intel: dict, target: str, elapsed: float,
             if count:
                 if label == "Admin Panel(s)":
                     tagged = [e for e in real_eps if e.get("admin_panel") and _not_asset(e)]
-                elif label == "IDOR Candidate(s)":
-                    tagged = [e for e in real_eps if e.get("idor_candidate") and _not_asset(e)]
                 elif label == "File Upload(s)":
                     tagged = [e for e in real_eps if e.get("file_upload_candidate") and _not_asset(e)]
                 elif label == "Auth Endpoint(s)":
@@ -1465,6 +1542,7 @@ class Config:
         self.enable_subdomain_enum = kw.get("enable_subdomain_enum", False)
         self.wordlist           = kw.get("wordlist",           None)
         self.no_crawl           = kw.get("no_crawl",           False)
+        self.ctf_flag_templates = kw.get("ctf_flag_templates", [])
                                                                 
         self.extra_scope: frozenset = frozenset(kw.get("extra_scope", []))
         self.user_agent = kw.get(
@@ -1667,31 +1745,6 @@ _NOISE_PARAMS: frozenset = frozenset({
     "ak_js", "comment_post_id", "comment_parent",
 })
 
-_NUMERIC_ID_RE = re.compile(
-    r'^(?:id|uid|uuid|user_?id|account_?id|item_?id|object_?id|record_?id|'
-    r'entry_?id|post_?id|order_?id|product_?id|model_?number|ref|reference|'
-    r'invoice|ticket|case|doc_?id|report_?id|profile_?id)$',
-    re.I
-)
-                                                                          
-_IDOR_PARAM_BLOCKLIST = frozenset({
-    'perpage', 'per_page', 'page', 'limit', 'offset', 'count',
-    'pricepoint', 'price', 'price_min', 'price_max',
-    'manufacturer', 'group_id', 'group', 'category', 'cat',
-    'sort', 'order', 'orderby', 'direction', 'filter',
-    'tab', 'view', 'format', 'type', 'lang', 'locale',
-    'ver', 'v', 'version', 'callback', 'key',
-})
-                                                                                  
-                                                                                  
-_PATH_ID_RE    = re.compile(
-    r'/(?:v[0-9]+/)?(?:[a-z][a-z0-9_-]*/)?'
-    r'([0-9]{4,}(?![0-9x/][0-9]{2,4}(?:[/?]|$))|'                                        
-    r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',        
-    re.I
-)
-_UUID_PATH_RE  = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[a-f0-9]{12}', re.I)
-
                                     
                                                               
                                                                  
@@ -1795,6 +1848,7 @@ class Store:
         self.comments:     List[dict]       = []
         self.secrets:      List[dict]       = []
         self.tech_stack:   Set[str]         = set()
+        self.whatweb_data: dict             = {}   # {category: [(icon, display_str), ...]}
         self.robots_paths: List[str]        = []
         self.robots_allowed_paths: List[str] = []
         self.target_response_headers: dict   = {}
@@ -1854,8 +1908,6 @@ class Store:
             "admin_panel":          False,
             "auth_classification":  [],
             "file_upload_candidate": False,
-            "idor_candidate":       False,
-            "idor_signals":         {},
             "screenshot":           None,
         }
 
@@ -2245,16 +2297,14 @@ class Store:
 
                               
             score = 0
-            if ep.get("idor_candidate"):        score += 20
             if ep.get("file_upload_candidate"): score += 15
-            if ep.get("unauthenticated_api"):   score += 18            
-            if ep.get("sensitive_data_source"): score += 16                      
-            if ep.get("legacy_endpoint"):       score += 12                        
+            if ep.get("unauthenticated_api"):   score += 18
+            if ep.get("sensitive_data_source"): score += 16
+            if ep.get("legacy_endpoint"):       score += 12
             if conf == "CONFIRMED":             score += 10
             if ep.get("auth_required"):         score += 5
             score += min(len(all_params) * 3, 15)
 
-                                                                 
             ep_key  = self._key(ep["url"], ep.get("method", "GET"))
             raw_ep  = self.endpoints.get(ep_key)
             obs_val = (raw_ep or {}).get("observed_values", {})
@@ -2267,8 +2317,6 @@ class Store:
                 "params_detail":         params_detail,
                 "form_fields_detail":    ep.get("form_fields_detail", []),
                 "auth_required":         ep.get("auth_required", False),
-                "idor_candidate":        ep.get("idor_candidate", False),
-                "idor_signals":          ep.get("idor_signals", {}),
                 "file_upload_candidate": ep.get("file_upload_candidate", False),
                 "observed_values":       obs_val,
                 "unauthenticated_api":   ep.get("unauthenticated_api", False),
@@ -2298,11 +2346,10 @@ class Store:
             "openapi_exposed":     len(self.openapi),
             "sourcemaps_exposed":  len(self.sourcemaps),
             "tech_stack":          sorted(self.tech_stack),
-                             
+            "whatweb_data":        self.whatweb_data,
             "admin_panels":       sum(1 for e in eps if e.get("admin_panel")),
             "auth_endpoints":     sum(1 for e in eps if e.get("auth_classification")),
             "upload_endpoints":   sum(1 for e in eps if e.get("file_upload_candidate")),
-            "idor_candidates":    sum(1 for e in eps if e.get("idor_candidate")),
             "extracted_data":     len(self.extracted_data),
             "robots_disallowed":  len(self.robots_paths),
             "robots_allowed":     len(self.robots_allowed_paths),
@@ -2350,6 +2397,7 @@ class Store:
 
             formatted_eps.append({
                 "url": e["url"],
+                "cluster": e.get("cluster") or cluster(normalize(e["url"])),
                 "method": e["methods"][0] if e["methods"] else "GET",
                 "confidence": cl,
                 "confidence_score": c,
@@ -2364,8 +2412,6 @@ class Store:
                 "admin_panel": e.get("admin_panel", False),
                 "auth_classification": e.get("auth_classification", []),
                 "file_upload_candidate": e.get("file_upload_candidate", False),
-                "idor_candidate": e.get("idor_candidate", False),
-                "idor_signals": e.get("idor_signals", {}),
                 "screenshot": e.get("screenshot"),
                                                                                            
                                                                               
@@ -2423,6 +2469,7 @@ class Store:
                                                                               
                                                                            
             "agent_targets": self._build_agent_targets(formatted_eps),
+            "whatweb_data":  self.whatweb_data,
         }
 
         if fmt == "json":
@@ -2508,6 +2555,44 @@ class Store:
                                                                         
             
                                                                         
+
+
+def _build_ctf_flag_patterns(templates: list) -> list:
+    """Convert user-supplied flag templates like 'flag{}' or 'HTB{}'
+    into compiled regexes.  The {} placeholder expands to [^}]{1,200}.
+    Returns a list of (display_prefix, compiled_re) tuples."""
+    patterns = []
+    for tmpl in templates:
+        tmpl = tmpl.strip()
+        if not tmpl:
+            continue
+        if "{}" not in tmpl:
+            # If user forgot the {}, append it
+            tmpl = tmpl.rstrip("{") + "{}"
+        # Escape everything except the {} placeholder
+        prefix, _, _ = tmpl.partition("{}")
+        esc = re.escape(prefix) + r"\{([^}]{1,200})\}"
+        try:
+            patterns.append((prefix + "{}", re.compile(esc)))
+        except re.error:
+            pass
+    return patterns
+
+
+def scan_ctf_flags(text: str, url: str, store, emit, patterns: list) -> int:
+    """Scan text for CTF flags matching any of the compiled patterns.
+    Records each unique match as a secret and emits a high-severity warning."""
+    if not patterns or not text:
+        return 0
+    found = 0
+    for display, pat in patterns:
+        for m in pat.finditer(text):
+            flag = m.group(0)
+            if store.add_secret(flag, "CTF_Flag", url):
+                emit.warn_sev(f"[CTF-FLAG] {flag}  ← {url}", "HIGH")
+                found += 1
+    return found
+
 
 class Extractor:
     _JS_NOISE = {
@@ -3173,6 +3258,87 @@ class Extractor:
                                         if not re.match(r'\+?\d+$', v): continue
                                         if re.match(r'(20[0-9]{2}[01][0-9][0-3][0-9]|[0-3][0-9][01][0-9]20[0-9]{2})', v): continue
                                     store.add_extracted_data(dtype, v.strip(), url)
+
+        # ── inline <script> // comments on the same HTML page ──────────────
+        # js_comments() is called separately only for standalone .js file
+        # fetches; this covers inline scripts embedded in HTML responses.
+        for script_tag in soup.find_all("script"):
+            src = script_tag.get("src")
+            if src:
+                continue  # external file — handled by the JS fetch path
+            raw = script_tag.string or ""
+            if not raw.strip():
+                # tag has multiple children (uncommon but valid)
+                raw = script_tag.get_text()
+            if raw:
+                cls.js_comments(raw, url, store, emit)
+
+    @classmethod
+    def css_comments(cls, text: str, url: str, store, emit, ctf_patterns=None):
+        """Extract /* ... */ comments from CSS files.
+        Looks for endpoint hints, credential leaks, and CTF flags."""
+        _SKIP_RE = re.compile(
+            r'^(?:author|version|license|copyright|font|color|'
+            r'margin|padding|display|position|overflow|'
+            r'webkit|moz|ms|w3c)',
+            re.I
+        )
+        _SIGNAL_RE = re.compile(
+            r'(?:password|passwd|secret|token|api[_-]?key|credential|'
+            r'todo|fixme|hack|debug|internal|admin|staging|prod|'
+            r'endpoint|path|url|config|key|auth|bypass|hidden|'
+            r'remove\s+before|do\s+not\s+commit)',
+            re.I
+        )
+        _PATH_RE = re.compile(r'(?:^|\s)(/[a-z0-9_\-\.]{2,}(?:/[a-z0-9_\-\.]*)*/?)', re.I)
+        found = 0
+        for m in re.finditer(r'/\*(.*?)\*/', text, re.DOTALL):
+            block = m.group(1).strip()
+            if not block or len(block) < 8 or len(block) > 600:
+                continue
+            first_line = block.splitlines()[0].strip().lstrip("* ")
+            if _SKIP_RE.match(first_line):
+                continue
+            has_signal  = bool(_SIGNAL_RE.search(block))
+            has_path    = bool(_PATH_RE.search(block))
+            has_url     = bool(re.search(r'https?://', block, re.I))
+            if not (has_signal or has_path or has_url):
+                continue
+            display = first_line if len(first_line) <= 160 else first_line[:157] + "…"
+            if store.add_comment(display, url):
+                emit.info(f"[CSS-Comment] {display[:120]}")
+                found += 1
+        if ctf_patterns:
+            scan_ctf_flags(text, url, store, emit, ctf_patterns)
+        return found
+
+    @classmethod
+    def data_attr_leaks(cls, soup, url: str, store, emit):
+        """Scan HTML data-* attributes for endpoint hints and debug info.
+        Developers sometimes leave data-api-url, data-endpoint, data-debug
+        values in production HTML that reveal internal routes or tokens."""
+        _INTERESTING = re.compile(
+            r'^data-(?:api|url|endpoint|src|action|href|path|'
+            r'debug|token|key|secret|auth|user|id|config|env|'
+            r'version|build|commit|branch|server|host|backend)',
+            re.I
+        )
+        _PATH_RE = re.compile(r'^(?:/[a-z0-9_\-\.]{2,}|https?://)', re.I)
+        found = 0
+        for tag in soup.find_all(True):
+            for attr, val in (tag.attrs or {}).items():
+                if not isinstance(val, str):
+                    continue
+                if not _INTERESTING.match(attr):
+                    continue
+                val = val.strip()
+                if not val or len(val) < 3 or len(val) > 500:
+                    continue
+                display = f"{attr}={val}"
+                if store.add_comment(display, url):
+                    emit.info(f"[DataAttr] {display[:120]}")
+                    found += 1
+        return found
 
     @classmethod
     def csp_hints(cls, headers, base_url, store, emit):
@@ -4907,100 +5073,6 @@ def classify_auth_endpoints(store: Store):
                 if label not in ep["auth_classification"]:
                     ep["auth_classification"].append(label)
 
-                                                                                 
-_IDOR_EXCLUDE_RE = re.compile(
-    r'/(?:cdn-cgi|_next|__webpack|webpack|static|assets|public|'
-    r'images?|img|icons?|fonts?|media|thumbnails?|placeholder|'
-    r'favicon|robots|sitemap|opensearch|manifest|sw\.js)(?:/|$|\?)',
-    re.I
-)
-
-def classify_idor_candidates(store: Store):
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-       
-    ts = store.tech_stack
-
-                                                                            
-                                                                             
-    _WP_COLLECTIONS = re.compile(
-        r'^/wp-json/wp/v2/(?:posts|pages|categories|tags|media|types|'
-        r'taxonomies|comments|blocks|templates|template-parts|'
-        r'navigation|menu-items|font-families|global-styles|svplayer|'
-        r'aiovg_videos|aiovg_categories|aiovg_tags)/?$',
-        re.I
-    )
-    _DRUPAL_COLLECTIONS = re.compile(
-        r'^/jsonapi/(?:node|taxonomy_term|file|media)/?$', re.I
-    )
-    _WP_ACTIVE = any("WordPress" in t for t in ts)
-    _DRUPAL_ACTIVE = any("Drupal" in t for t in ts)
-
-    for ep in store.endpoints.values():
-        if not _is_confirmed(ep):
-            continue
-        url  = ep["url"]
-        path = urlparse(url).path
-
-                                                               
-        if _IDOR_EXCLUDE_RE.search(url):
-            continue
-        if _STATIC_EXT.search(url.split("?")[0]):
-            continue
-
-                                                                           
-        if _WP_ACTIVE and _WP_COLLECTIONS.match(path):
-            continue
-        if _DRUPAL_ACTIVE and _DRUPAL_COLLECTIONS.match(path):
-            continue
-
-                        
-        raw = ep.get("params", {})
-        if isinstance(raw, list):
-            all_params = raw
-        else:
-            all_params = []
-            for b in ("query", "form", "js", "openapi", "runtime"):
-                all_params += raw.get(b, [])
-        all_params = [p for p in all_params
-                      if p.lower().split("[")[0] not in _NOISE_PARAMS]
-
-        has_id_param = any(
-            _NUMERIC_ID_RE.search(p) and p.lower() not in _IDOR_PARAM_BLOCKLIST
-            for p in all_params
-        )
-
-        # A "userid"/"user_id"-style param next to credential fields (pwd, password,
-        # username, etc.) is a login form field, not an object reference — don't
-        # flag the endpoint as an IDOR candidate on that basis alone.
-        if has_id_param:
-            _lower_params = {p.lower() for p in all_params}
-            _CRED_FIELDS = {"pwd", "password", "passwd", "username", "userid",
-                            "user_id", "login", "email", "captcha", "recaptcha",
-                            "csrf", "csrf_token", "_token"}
-            if len(_lower_params & _CRED_FIELDS) >= 2:
-                has_id_param = False
-
-        has_id_path = bool(_PATH_ID_RE.search(url) or _UUID_PATH_RE.search(url))
-
-        if has_id_param or has_id_path:
-            ep["idor_candidate"] = True
-            ep["idor_signals"] = {
-                "id_params":   [p for p in all_params if _NUMERIC_ID_RE.search(p)],
-                "has_id_path": has_id_path,
-            }
-
 def _flag_upload_endpoints(store: Store):
                                                                         
     _UPLOAD_PATH_RE = re.compile(
@@ -6081,8 +6153,14 @@ class Spider:
         self._depth_cnt: Dict[int,int] = defaultdict(int)
         self.queue.put_nowait((target, 0, "Seed"))
         self._current_url: str = target
-                                                        
         self._dynamic_scope: Set[str] = set()
+        # Build compiled CTF flag patterns once from templates
+        self.cfg.ctf_flag_patterns = _build_ctf_flag_patterns(
+            getattr(self.cfg, "ctf_flag_templates", [])
+        )
+        if self.cfg.ctf_flag_patterns:
+            fmts = ", ".join(t for t, _ in self.cfg.ctf_flag_patterns)
+            self.emit.always_info(f"[CTF] Flag scanning enabled — formats: {fmts}")
 
     @staticmethod
     def _check_is_ip(host: str) -> bool:
@@ -6134,6 +6212,283 @@ class Spider:
 
     def _over_budget(self, depth):
         return self._depth_cnt[depth] >= self.cfg.max_urls_per_depth
+
+    # ── WhatWeb Integration ────────────────────────────────────────────────────
+
+    # Category map (shared between _run_whatweb and the report printer)
+    _WHATWEB_CAT = {
+        # Server / Web server
+        "apache":           ("Server",      "◈"),
+        "nginx":            ("Server",      "◈"),
+        "iis":              ("Server",      "◈"),
+        "lighttpd":         ("Server",      "◈"),
+        "caddy":            ("Server",      "◈"),
+        "openresty":        ("Server",      "◈"),
+        "httpserver":       ("Server",      "◈"),
+        "werkzeug":         ("Server",      "◈"),
+        "gunicorn":         ("Server",      "◈"),
+        "tornado":          ("Server",      "◈"),
+        "unicorn":          ("Server",      "◈"),
+        "jetty":            ("Server",      "◈"),
+        "tomcat":           ("Server",      "◈"),
+        "webrick":          ("Server",      "◈"),
+        "puma":             ("Server",      "◈"),
+        # Language runtime
+        "python":           ("Runtime",     "⬢"),
+        "ruby":             ("Runtime",     "⬢"),
+        "php":              ("Runtime",     "⬢"),
+        "java":             ("Runtime",     "⬢"),
+        "nodejs":           ("Runtime",     "⬢"),
+        "perl":             ("Runtime",     "⬢"),
+        "golang":           ("Runtime",     "⬢"),
+        # CMS
+        "wordpress":        ("CMS",         "⬡"),
+        "drupal":           ("CMS",         "⬡"),
+        "joomla":           ("CMS",         "⬡"),
+        "typo3":            ("CMS",         "⬡"),
+        "magento":          ("CMS",         "⬡"),
+        "shopify":          ("CMS",         "⬡"),
+        "wix":              ("CMS",         "⬡"),
+        "squarespace":      ("CMS",         "⬡"),
+        "prestashop":       ("CMS",         "⬡"),
+        "opencart":         ("CMS",         "⬡"),
+        "ghost":            ("CMS",         "⬡"),
+        "strapi":           ("CMS",         "⬡"),
+        # Framework
+        "laravel":          ("Framework",   "⬡"),
+        "django":           ("Framework",   "⬡"),
+        "rails":            ("Framework",   "⬡"),
+        "symfony":          ("Framework",   "⬡"),
+        "codeigniter":      ("Framework",   "⬡"),
+        "express":          ("Framework",   "⬡"),
+        "flask":            ("Framework",   "⬡"),
+        "spring":           ("Framework",   "⬡"),
+        "nextjs":           ("Framework",   "⬡"),
+        "nuxtjs":           ("Framework",   "⬡"),
+        "fastapi":          ("Framework",   "⬡"),
+        "aspnet":           ("Framework",   "⬡"),
+        # JS Libraries / Frontend
+        "jquery":           ("JS Libs",     "◇"),
+        "react":            ("JS Libs",     "◇"),
+        "vuejs":            ("JS Libs",     "◇"),
+        "angular":          ("JS Libs",     "◇"),
+        "bootstrap":        ("JS Libs",     "◇"),
+        "modernizr":        ("JS Libs",     "◇"),
+        "lodash":           ("JS Libs",     "◇"),
+        "momentjs":         ("JS Libs",     "◇"),
+        "underscore":       ("JS Libs",     "◇"),
+        "tailwind":         ("JS Libs",     "◇"),
+        "alpinejs":         ("JS Libs",     "◇"),
+        # Analytics / Tracking
+        "googleanalytics":  ("Analytics",   "◎"),
+        "googletagmanager": ("Analytics",   "◎"),
+        "googletag":        ("Analytics",   "◎"),
+        "facebook":         ("Analytics",   "◎"),
+        "hotjar":           ("Analytics",   "◎"),
+        "mixpanel":         ("Analytics",   "◎"),
+        "segment":          ("Analytics",   "◎"),
+        "hubspot":          ("Analytics",   "◎"),
+        "matomo":           ("Analytics",   "◎"),
+        "plausible":        ("Analytics",   "◎"),
+        # CDN / Cloud / Proxy
+        "cloudflare":       ("CDN/Cloud",   "☁"),
+        "cloudfront":       ("CDN/Cloud",   "☁"),
+        "awss3":            ("CDN/Cloud",   "☁"),
+        "azure":            ("CDN/Cloud",   "☁"),
+        "akamai":           ("CDN/Cloud",   "☁"),
+        "fastly":           ("CDN/Cloud",   "☁"),
+        "varnish":          ("CDN/Cloud",   "☁"),
+        "litespeed":        ("CDN/Cloud",   "☁"),
+        "sucuri":           ("CDN/Cloud",   "☁"),
+        # Security
+        "recaptcha":        ("Security",    "⚑"),
+        "hsts":             ("Security",    "⚑"),
+        "csp":              ("Security",    "⚑"),
+        "xframeoptions":    ("Security",    "⚑"),
+        "xssprot":          ("Security",    "⚑"),
+        # Meta / Generator
+        "metagenerator":    ("Generator",   "⊕"),
+        "generatorbysite":  ("Generator",   "⊕"),
+        # Geo / Network
+        "country":          ("GeoIP",       "⊛"),
+        "ipaddress":        ("GeoIP",       "⊛"),
+        # Contacts
+        "email":            ("Emails",      "✉"),
+        # Session / Cookies
+        "cookies":          ("Cookies",     "⊡"),
+        # Response headers
+        "uncommonheaders":  ("Headers",     "⊞"),
+        "via":              ("Headers",     "⊞"),
+        # Page meta — intentionally last / lowest priority
+        "html5":            ("Page",        "·"),
+        "script":           ("Page",        "·"),
+        "title":            ("Page",        "·"),
+        "meta":             ("Page",        "·"),
+        "frame":            ("Page",        "·"),
+    }
+
+    _WHATWEB_CAT_STYLE = {
+        "Server":     (C.CY,  "SERVER   "),
+        "Runtime":    (C.CYD, "RUNTIME  "),
+        "CMS":        (C.MG,  "CMS      "),
+        "Framework":  (C.MG,  "FRAMEWORK"),
+        "JS Libs":    (C.BL,  "JS LIBS  "),
+        "Analytics":  (C.Y,   "ANALYTICS"),
+        "CDN/Cloud":  (C.GD,  "CDN/CLOUD"),
+        "Security":   (C.G,   "SECURITY "),
+        "Generator":  (C.O,   "GENERATOR"),
+        "GeoIP":      (C.GR,  "GEO/IP   "),
+        "Emails":     (C.O,   "EMAIL    "),
+        "Cookies":    (C.CYD, "COOKIES  "),
+        "Headers":    (C.GR,  "HEADERS  "),
+        "Page":       (C.GR,  "PAGE     "),
+        "Other":      (C.GL,  "OTHER    "),
+    }
+
+    @staticmethod
+    def _ww_parse_plugins(plugins: dict):
+        """Parse WhatWeb plugins dict into bucketed + flat lists."""
+        bucketed: Dict[str, list] = defaultdict(list)
+        flat_tech: list = []
+
+        for plugin_name, pdata in plugins.items():
+            plo = plugin_name.lower().replace("-","").replace("_","").replace(" ","")
+
+            # Exact key lookup first, then prefix-startswith for compound names (e.g. "nextjs" matches "next")
+            cat, icon = "Other", "·"
+            if plo in Spider._WHATWEB_CAT:
+                cat, icon = Spider._WHATWEB_CAT[plo]
+            else:
+                for kw, (c, i) in Spider._WHATWEB_CAT.items():
+                    if plo.startswith(kw) and len(kw) >= 3:
+                        cat, icon = c, i
+                        break
+
+            versions = []
+            if isinstance(pdata, dict):
+                for field in ("version", "string", "value"):
+                    v = pdata.get(field)
+                    if v:
+                        versions = [str(x) for x in v] if isinstance(v, list) else [str(v)]
+                        break
+
+            display = f"{plugin_name} {versions[0]}" if versions else plugin_name
+            bucketed[cat].append((icon, display))
+            flat_tech.append(f"[WW] {display}")
+
+        return dict(bucketed), flat_tech
+
+    async def _run_whatweb(self, url: str):
+        """
+        Run WhatWeb concurrently with other recon probes.
+        Stops the animator, prints live findings per-category, then resumes.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "whatweb", "--log-json=/dev/stdout", "--quiet", url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except FileNotFoundError:
+            self.emit.info("[WhatWeb] Not installed — skipping (apt install whatweb)")
+            return
+        except asyncio.TimeoutError:
+            self.emit.warn("[WhatWeb] Timed out after 30s")
+            return
+        except Exception as e:
+            self.emit.warn(f"[WhatWeb] Error: {e}")
+            return
+
+        raw = (stdout or b"").decode(errors="replace").strip()
+        if not raw:
+            self.emit.warn("[WhatWeb] Empty output — no data returned")
+            return
+
+        # Parse: try whole blob first (v0.6.x pretty-prints), then line-by-line
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            for line in raw.splitlines():
+                line = line.strip().rstrip(",")
+                if not line or line in ("[", "]"):
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        if not parsed:
+            self.emit.warn(f"[WhatWeb] Could not parse output — raw: {raw[:120]!r}")
+            return
+
+        if isinstance(parsed, list):
+            entry = parsed[0] if parsed else {}
+        else:
+            entry = parsed
+
+        plugins: dict = entry.get("plugins", {})
+        if not plugins:
+            self.emit.warn("[WhatWeb] Parsed OK but no plugins key found")
+            return
+
+        bucketed, flat_tech = Spider._ww_parse_plugins(plugins)
+
+        self.store.tech_stack.update(flat_tech)
+        self.store.whatweb_data = bucketed
+
+        # ── Live findings — routed through emit._w so animator clears cleanly ──
+        _ORDER = ["Server","Runtime","CDN/Cloud","CMS","Framework","JS Libs",
+                  "Analytics","Security","Generator","Cookies","GeoIP","Emails","Headers","Page","Other"]
+        ordered = _ORDER + [c for c in bucketed if c not in _ORDER]
+        nc = self.emit._nc
+
+        # Category color palette — red/orange/white, no cyan (reserved for [*])
+        _LIVE_COL = {
+            "Server":    C.R,
+            "Runtime":   C.O,
+            "CDN/Cloud": C.O,
+            "CMS":       C.R,
+            "Framework": C.O,
+            "JS Libs":   C.W,
+            "Analytics": C.GL,
+            "Security":  C.G,
+            "Generator": C.GL,
+            "GeoIP":     C.GR,
+            "Emails":    C.GL,
+            "Cookies":   C.GR,
+            "Headers":   C.GR,
+            "Page":      C.GR,
+            "Other":     C.GR,
+        }
+
+        self.emit._w(
+            f"{C.R}{C.B}[WhatWeb]{C.RST} {C.W}{len(plugins)} plugins fingerprinted  "
+            f"{C.GR}({len(bucketed)} categories){C.RST}"
+            if not nc else
+            f"[WhatWeb] {len(plugins)} plugins fingerprinted ({len(bucketed)} categories)"
+        )
+
+        for cat in ordered:
+            entries = bucketed.get(cat)
+            if not entries:
+                continue
+            col = _LIVE_COL.get(cat, C.GL)
+            _, label = Spider._WHATWEB_CAT_STYLE.get(cat, (C.GL, f"{cat:<9}"))
+            if nc:
+                plugins_str = "  ·  ".join(disp for _, disp in entries)
+                self.emit._w(f"  [{label.strip():<9}]  {plugins_str}")
+            else:
+                tag   = f"{C.R}{C.B}[{C.RST}{col}{C.B}{label.strip()}{C.RST}{C.R}{C.B}]{C.RST}"
+                items = f"  {C.GR}·{C.RST}  ".join(
+                    f"{col}{C.B}{icon}{C.RST} {col}{disp}{C.RST}"
+                    for icon, disp in entries
+                )
+                self.emit._w(f"  {tag}  {items}")
+
+    # ── End WhatWeb Integration ────────────────────────────────────────────────
 
     def _detect_tech(self, headers, body, url):
         tech: Set[str] = set()
@@ -6389,8 +6744,12 @@ class Spider:
 
     def _process_html(self, url, text, depth, source):
         soup = BeautifulSoup(text, "lxml")
+        ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
         Extractor.html_comments(soup, url, self.store, self.emit,
                                 base_url=url, discover_url=self._discover_url, depth=depth)
+        Extractor.data_attr_leaks(soup, url, self.store, self.emit)
+        if ctf_patterns:
+            scan_ctf_flags(text, url, self.store, self.emit, ctf_patterns)
         for tag in soup.find_all(["a","link","area"], href=True):
             href = tag.get("href","").strip()
             if href and not href.startswith(("javascript:","mailto:","tel:","#")):
@@ -6406,8 +6765,8 @@ class Spider:
                 Extractor.js_endpoints(tag.string, url, self.store, self.emit)
                 Extractor.js_params(tag.string, url, self.store, self.emit)
                 Extractor.secrets(tag.string, url, self.store, self.emit)
-                Extractor.js_comments(tag.string, url, self.store, self.emit)
                 Extractor.js_routes(tag.string, url, self.store, self.emit)
+                # js_comments on inline scripts is now handled inside html_comments
         for form in soup.find_all("form"):
             action = form.get("action") or url
             full   = urljoin(url, action)
@@ -6626,11 +6985,18 @@ class Spider:
     async def _process_js(self, url, text, session):
         ep_count = 0
         param_count = 0
+        ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
         Extractor.secrets(text, url, self.store, self.emit)
         Extractor.js_endpoints(text, url, self.store, self.emit)
         Extractor.js_params(text, url, self.store, self.emit)
         Extractor.js_comments(text, url, self.store, self.emit)
         Extractor.js_routes(text, url, self.store, self.emit)
+        # CSS files fetched through the crawl land here too via content-type check
+        if url.split("?")[0].lower().endswith(".css"):
+            Extractor.css_comments(text, url, self.store, self.emit,
+                                   ctf_patterns=ctf_patterns)
+        if ctf_patterns:
+            scan_ctf_flags(text, url, self.store, self.emit, ctf_patterns)
         await self._check_sourcemap(session, url)
         for m in re.finditer(r'import\s*\(\s*["\']([^"\']+)["\']', text):
             full = urljoin(url, m.group(1))
@@ -6731,6 +7097,10 @@ class Spider:
                 self.store.add_endpoint(url, source='Error_Leak', score=Conf.HIGH)
                 self.store.add_secret(body[:200], 'Error_Stack_Trace', url)
                 self.emit.warn(f'[Error-Leak] Verbose error at {url}')
+            # CTF flags sometimes surface in error/debug page bodies
+            ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
+            if ctf_patterns:
+                scan_ctf_flags(body, url, self.store, self.emit, ctf_patterns)
         elif s == 200:
             if Extractor.is_bot_blocked(body):
                 self.emit.warn(f"[Bot-Blocked] Target redirected to challenge page: {url}")
@@ -6821,6 +7191,10 @@ class Spider:
                     if _chained:
                         self.emit.info(f"[ID-Chain] {_chained} ID field(s) chained from {url}")
                 self._extract_body_param_hints(url, body)
+                # CTF flags can appear in JSON API responses
+                ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
+                if ctf_patterns:
+                    scan_ctf_flags(body, url, self.store, self.emit, ctf_patterns)
 
     async def _worker(self, session, worker_id, crawl_delay):
         while True:
@@ -6902,23 +7276,28 @@ class Spider:
                 except Exception:
                     pass
                 self.emit.animator.start_anim("Recon Probing Base")
-                                     
-                if not getattr(self.cfg, 'no_tls', False):
-                    self.emit.animator.update(0, "Recon TLS")
-                    _tls = TLSInspector(self.target, self.store, self.emit)
-                    await _tls.run()
-                                                                            
-                if self.store.target_response_headers:
-                    _hdr_auditor = HeaderAuditor(self.store, self.emit)
-                    _hdr_auditor.run(self.store.target_response_headers)
-                                             
-                if self.store.target_response_headers:
-                    _waf = WAFDetector(self.store, self.emit)
-                    _root_cookies = {c.split("=")[0].strip(): c.split("=",1)[-1].strip()
-                                     for c in (self.store.target_response_headers.get("Set-Cookie","") or "").split(";")
-                                     if "=" in c}
-                    _waf.run(self.store.target_response_headers, "", _root_cookies)
-                                       
+
+                # ── Fire WhatWeb + TLS concurrently ───────────────────────────
+                async def _tls_and_headers():
+                    if not getattr(self.cfg, 'no_tls', False):
+                        self.emit.animator.update(0, "Recon TLS")
+                        _tls = TLSInspector(self.target, self.store, self.emit)
+                        await _tls.run()
+                    if self.store.target_response_headers:
+                        _hdr_auditor = HeaderAuditor(self.store, self.emit)
+                        _hdr_auditor.run(self.store.target_response_headers)
+                    if self.store.target_response_headers:
+                        _waf = WAFDetector(self.store, self.emit)
+                        _root_cookies = {c.split("=")[0].strip(): c.split("=",1)[-1].strip()
+                                         for c in (self.store.target_response_headers.get("Set-Cookie","") or "").split(";")
+                                         if "=" in c}
+                        _waf.run(self.store.target_response_headers, "", _root_cookies)
+
+                await asyncio.gather(
+                    _tls_and_headers(),
+                    self._run_whatweb(self.target),
+                )
+
                 if not self.is_ip_target:
                     self.emit.animator.update(0, "Recon DNS")
                     _dns = DNSIntel(self.target, self.store, self.emit)
@@ -7083,7 +7462,6 @@ class Spider:
                 classify_legacy_endpoints(self.store)
                 classify_admin_endpoints(self.store)
                 classify_auth_endpoints(self.store)
-                classify_idor_candidates(self.store)
                 _flag_upload_endpoints(self.store)
                                                               
                 self.emit.animator.start_anim("ASM: JS SCA Analysis")
@@ -7102,16 +7480,48 @@ class Spider:
 
 def diff_crawls(old_json: str, new_json: str) -> dict:
     old = json.loads(old_json); new = json.loads(new_json)
-    om  = {e["cluster"]: e for e in old.get("endpoints",[])}
-    nm  = {e["cluster"]: e for e in new.get("endpoints",[])}
+
+    def get_cluster(e):
+        return e.get("cluster") or cluster(normalize(e["url"]))
+
+    def get_methods(e):
+        if "methods" in e:
+            return list(e["methods"])
+        if "method" in e:
+            return [e["method"]]
+        return ["GET"]
+
+    def get_conf(e):
+        return e.get("confidence_label") or e.get("confidence", "LOW")
+
+    def build_map(eps):
+        m = {}
+        for e in eps:
+            cl = get_cluster(e)
+            methods = get_methods(e)
+            if cl not in m:
+                m[cl] = {
+                    "cluster": cl,
+                    "url": e["url"],
+                    "methods": set(methods),
+                    "confidence_label": get_conf(e),
+                    "auth_required": e.get("auth_required", False),
+                    "orig": e
+                }
+            else:
+                m[cl]["methods"].update(methods)
+        return m
+
+    om = build_map(old.get("endpoints", []))
+    nm = build_map(new.get("endpoints", []))
     ok, nk = set(om), set(nm)
-    added   = [nm[k] for k in (nk - ok)]
-    removed = [om[k] for k in (ok - nk)]
+    added   = [nm[k]["orig"] for k in (nk - ok)]
+    removed = [om[k]["orig"] for k in (ok - nk)]
     changed = []
     for k in ok & nk:
         o, n = om[k], nm[k]; diff: dict = {}
-        if set(o["methods"]) != set(n["methods"]):
-            diff["methods"] = {"old": o["methods"], "new": n["methods"]}
+        if o["methods"] != n["methods"]:
+            diff["methods"] = {"old": sorted(list(o["methods"])), "new": sorted(list(n["methods"]))}
         if o["confidence_label"] != n["confidence_label"]:
             diff["confidence"] = {"old": o["confidence_label"], "new": n["confidence_label"]}
         if o["auth_required"] != n["auth_required"]:
@@ -7390,23 +7800,29 @@ def _build_parser() -> argparse.ArgumentParser:
                             "(robots, sitemap, admin probe, sensitive files, wordlist, subdomains, wayback)")
 
     scope = p.add_argument_group(f"{C.CY}Scope{C.RST}")
-    scope.add_argument("--subdomains",        action="store_true",
+    scope.add_argument("--subdomains",        "-b", action="store_true",
                        help="Enable subdomain enumeration via certificate transparency logs")
     scope.add_argument("--follow-subdomains", "-S", action="store_true",
                        help="Crawl discovered subdomains within the base domain")
     scope.add_argument("--follow-redirects",  "-r", action="store_true",
                        help="Follow cross-host redirects and add the destination host to scope")
-    scope.add_argument("--scope", type=str, default=None, metavar="HOSTS",
+    scope.add_argument("--scope", "-A", type=str, default=None, metavar="HOSTS",
                        help="Comma-separated extra hosts to include in scope  e.g. api.target.com,cdn.target.com")
-    scope.add_argument("--wordlist", type=str, default=None, metavar="FILE",
+    scope.add_argument("--wordlist", "-w", type=str, default=None, metavar="FILE",
                        help="Path to a directory/file wordlist for endpoint discovery")
+
+    ctf = p.add_argument_group(f"{C.CY}CTF{C.RST}")
+    ctf.add_argument("--ctf-flag", "-K", type=str, default=None, metavar="TEMPLATE",
+                     help="Flag format to scan for across all content (HTML, JS, CSS, JSON, "
+                          "error pages, comments). Use {} as the flag-body placeholder. "
+                          "Multiple formats comma-separated: flag{},ctf{}")
 
     util = p.add_argument_group(f"{C.CY}Utilities{C.RST}")
     util.add_argument("--diff",    "-D", type=str, default=None, metavar="OLD_REPORT",
                       help="Diff this scan against an old JSON report")
-    util.add_argument("--har", "-H", type=str, default=None, metavar="HAR_FILE",
+    util.add_argument("--har",     "-H", type=str, default=None, metavar="HAR_FILE",
                       help="Import a browser HAR session file to seed the store with auth-gated requests")
-    util.add_argument("--upgrade",       action="store_true",
+    util.add_argument("--upgrade", "-U", action="store_true",
                       help="Upgrade Hellhound-Spider to the latest version")
 
     return p
@@ -7430,6 +7846,10 @@ def main():
     if not args.target:
         parser.print_help()
         sys.exit(1)
+
+    if not shutil.which("whatweb"):
+        emit.always_info(f"{C.Y}[!] [WhatWeb] Technology fingerprinter is not installed.{C.RST}")
+        emit.always_info(f"    For rich technology stack fingerprinting, run: {C.G}sudo apt install whatweb{C.RST}\n")
 
                            
     nc = emit._nc
@@ -7516,6 +7936,8 @@ def main():
         enable_subdomain_enum = args.subdomains,
         wordlist          = args.wordlist,
         no_crawl          = args.no_crawl,
+        ctf_flag_templates = [t.strip() for t in args.ctf_flag.split(",") if t.strip()]
+                             if args.ctf_flag else [],
         extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
                             if args.scope else [],
     )
