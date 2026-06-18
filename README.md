@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-14.10-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.10-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -63,11 +63,11 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v14.10 — Recon Overhaul
+## v13.10 — Recon Overhaul
 
-v14.10 restructures the reconnaissance pipeline for precision and operator control — subdomain enumeration is now opt-in, a new wordlist brute-force engine ships with soft-404 filtering, and the unreliable injection-candidate scoring heuristic has been removed entirely.
+v13.10 restructures the reconnaissance pipeline for precision and operator control — subdomain enumeration is now opt-in, a new wordlist brute-force engine ships with soft-404 filtering, and the unreliable injection-candidate scoring heuristic has been removed entirely.
 
-### New in v14.10
+### New in v13.10
 
 - **No-Crawl Mode** (`--no-crawl` / `-N`) — Run only the recon and probing modules (robots, sitemap, admin panels, sensitive files, wordlist, subdomains, Wayback) without BFS link crawling. Useful for fast, targeted reconnaissance.
 - **Wordlist Brute Force** (`--wordlist FILE`) — Directory and file discovery using a user-supplied wordlist. Responses are filtered through the same canary-fingerprint and soft-404 logic used by the sensitive-file probe, so noisy SPA/wildcard-200 targets don't flood results.
