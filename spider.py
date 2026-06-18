@@ -1644,6 +1644,37 @@ class SessionManager:
             return {"Authorization": f"Basic {encoded}"}
         return {}
 
+    @staticmethod
+    def parse_custom_headers(raw_list) -> Dict[str, str]:
+        """
+        Generic --header / -X parser. Unlike parse_auth_header, this is NOT
+        restricted to a fixed allowlist — bug bounty programs (Bugcrowd,
+        HackerOne, Synack, etc.) often require arbitrary identifying headers
+        e.g. "X-Bug-Bounty: handle" or "X-BugCrowd-Ninja: handle" so a tester's
+        traffic is provably theirs and excluded from third-party noise.
+
+        Accepts a list of "Name: Value" strings (repeatable),
+        or a single such string, or a dict. Last value wins on duplicate names.
+        """
+        if not raw_list:
+            return {}
+        if isinstance(raw_list, dict):
+            return {str(k).strip(): str(v).strip() for k, v in raw_list.items() if str(k).strip()}
+        if isinstance(raw_list, str):
+            raw_list = [raw_list]
+        out: Dict[str, str] = {}
+        for item in raw_list:
+            if not item:
+                continue
+            item = item.strip()
+            if ":" not in item:
+                continue
+            k, _, v = item.partition(":")
+            k = k.strip(); v = v.strip()
+            if k:
+                out[k] = v
+        return out
+
 
                                                                         
               
@@ -7763,11 +7794,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     auth = p.add_argument_group(f"{C.CY}Authentication{C.RST}")
     auth.add_argument("--cookie",  "-C", type=str, default=None, metavar="COOKIE",
-                      help="Cookie string, dict, or path to cookie file")
+                      help='Cookie string (e.g., "session=42"), dict, or path to a cookie file. '
+                           'Since the spider does not support automated form-login using username/password, '
+                           'you must manually log in via a browser and supply the session cookie here.')
     auth.add_argument("--auth",    "-a", type=str, default=None, metavar="HEADER",
                       help='Authorization header  e.g. "Bearer eyJ..."')
     auth.add_argument("--basic-auth", "-u", type=str, default=None, metavar="USER:PASS",
-                      help='HTTP Basic auth, curl-style  e.g. "admin:password"')
+                      help='HTTP Basic Access Authentication credentials  e.g. "admin:password" '
+                           '(note: this is for server-level basic auth, not standard login forms)')
+    auth.add_argument("--header",  "-X", action="append", default=None, metavar="NAME: VALUE",
+                      help='Custom header, repeatable, formatted as "Name: Value"  e.g. -X "X-Bug-Bounty: Bugcrowd-yourhandle" '
+                           '-X "X-Research-Purpose: authorized-pentest"  '
+                           '(use for program-required tester-identification headers)')
 
     out = p.add_argument_group(f"{C.CY}Output{C.RST}")
     out.add_argument("--out",    "-o", type=str, default=None, metavar="FILE",
@@ -7897,6 +7935,13 @@ def main():
         else:
             emit.warn('[Auth] --basic-auth expects "user:pass" format — ignoring.')
 
+    custom_hdrs = SessionManager.parse_custom_headers(getattr(args, "header", None))
+    if custom_hdrs:
+        _bad = [h for h in (getattr(args, "header", None) or []) if h and ":" not in h]
+        if _bad:
+            emit.warn(f'[Auth] Ignored malformed --header value(s) (expected "Name: Value"): {_bad}')
+        xhdrs.update(custom_hdrs)  # -X wins on name clash with --auth/--basic-auth
+
     if isinstance(args.cookie, dict):
         _dropped = [k for k in args.cookie
                     if k.lower() in ("authorization","x-api-key","x-auth-token",
@@ -7907,9 +7952,9 @@ def main():
 
     if cookies:
         emit.always_info(f"[Auth] Cookies loaded  →  {list(cookies.keys())}")
-    elif xhdrs:
-        emit.always_info(f"[Auth] Header auth     →  {list(xhdrs.keys())}")
-    else:
+    if xhdrs:
+        emit.always_info(f"[Auth] Headers sent    →  {list(xhdrs.keys())}")
+    if not cookies and not xhdrs:
         emit.always_info("[Auth] No credentials — unauthenticated scan")
 
     cfg = Config(

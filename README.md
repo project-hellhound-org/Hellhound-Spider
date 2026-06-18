@@ -135,8 +135,10 @@ spider <target> [options]
 
 | Flag | Short | Description |
 |---|---|---|
-| `--cookie` | `-C` | Cookie string `"name=value"` or path to a cookie file |
+| `--cookie` | `-C` | Cookie string `"name=value"` or path to a cookie file. Since standard form-login is not supported, log in manually via browser and pass active session cookies here. |
 | `--auth` | `-a` | Authorization header value e.g. `"Bearer eyJ..."` |
+| `--basic-auth` | `-u` | HTTP Basic Access Authentication credentials e.g. `"admin:password"` (not for standard login forms) |
+| `--header` | `-X` | Custom header formatted as `"Name: Value"`, repeatable. |
 
 ### Output
 
@@ -165,11 +167,11 @@ spider <target> [options]
 
 | Flag | Short | Description |
 |---|---|---|
-| `--subdomains` | | Enable subdomain enumeration via certificate transparency logs |
+| `--subdomains` | `-b` | Enable subdomain enumeration via certificate transparency logs |
 | `--follow-subdomains` | `-S` | Crawl discovered subdomains within the base domain |
 | `--follow-redirects` | `-r` | Follow cross-host redirects and add destination to scope |
-| `--scope` | | Comma-separated extra hosts to include in scope |
-| `--wordlist` | | Path to a directory/file wordlist for endpoint discovery |
+| `--scope` | `-A` | Comma-separated extra hosts to include in scope |
+| `--wordlist` | `-w` | Path to a directory/file wordlist for endpoint discovery |
 
 ### CTF
 
@@ -182,7 +184,7 @@ spider <target> [options]
 | Flag | Short | Description |
 |---|---|---|
 | `--diff OLD_REPORT` | `-D` | Diff this scan against a previous JSON report |
-| `--upgrade` | | Pull latest version |
+| `--upgrade` | `-U` | Pull latest version |
 
 ---
 
@@ -200,6 +202,12 @@ spider https://target.com -C "token=eyJhbGci..."
 
 # Authenticated with Bearer token
 spider https://target.com -a "Bearer eyJhbGci..."
+
+# Authenticated with HTTP Basic Auth
+spider https://target.com -u "admin:password"
+
+# Authenticated with custom HTTP headers
+spider https://target.com -X "X-Bug-Bounty: handle" -X "X-Research-Purpose: testing"
 
 # Load cookies from a browser-exported file
 spider https://target.com -C /path/to/cookies.txt

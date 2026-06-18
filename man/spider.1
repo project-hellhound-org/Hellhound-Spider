@@ -57,15 +57,21 @@ Show all discovery logs, including low-confidence and informational events.
 .SS "Authentication"
 .TP
 .BR \-C ", " \-\-cookie " " \fICOOKIE\fR
-Cookie string, dict-style string, or path to a cookie file. Used to scan
-authenticated areas of the application.
+Cookie string (e.g. \fB"session=42"\fR), dict-style string, or path to a cookie
+file. Used to scan authenticated areas of the application. Since the spider does
+not support automated form-login using username and password, you must manually
+log in via a browser and supply the session cookie here.
 .TP
 .BR \-a ", " \-\-auth " " \fIHEADER\fR
 Authorization header value, e.g. \fB"Bearer eyJ..."\fR.
 .TP
 .BR \-u ", " \-\-basic\-auth " " \fIUSER:PASS\fR
-HTTP Basic authentication credentials, curl-style, e.g.
-\fBadmin:password\fR.
+HTTP Basic Access Authentication credentials, e.g. \fBadmin:password\fR. Note that
+this is for server-level basic authentication, not standard web login forms.
+.TP
+.BR \-X ", " \-\-header " " \fI"NAME: VALUE"\fR
+Custom HTTP header, repeatable. Pass custom headers formatted as \fB"Name: Value"\fR.
+Useful for program-required tester identification or custom tokens.
 .SS "Output"
 .TP
 .BR \-o ", " \-\-out " " \fIFILE\fR
@@ -132,11 +138,11 @@ Crawl discovered subdomains within the base domain.
 .BR \-r ", " \-\-follow\-redirects
 Follow cross-host redirects and add the destination host to scope.
 .TP
-.BR \-\-scope " " \fIHOSTS\fR
+.BR \-A ", " \-\-scope " " \fIHOSTS\fR
 Comma-separated list of additional hosts to include in scope, e.g.
 \fBapi.target.com,cdn.target.com\fR.
 .TP
-.BR \-\-wordlist " " \fIFILE\fR
+.BR \-w ", " \-\-wordlist " " \fIFILE\fR
 Path to a newline-separated wordlist of directory and file names. Each
 entry is requested against the target; responses are filtered through the
 same soft-404 and canary-fingerprint logic used for sensitive-file
@@ -159,7 +165,7 @@ new, removed, and changed endpoints.
 Import a browser HAR session file to seed the scan with authenticated or
 otherwise hard-to-reach requests captured during manual browsing.
 .TP
-.BR \-\-upgrade
+.BR \-U ", " \-\-upgrade
 Upgrade \fBspider\fR to the latest version.
 .SS "General"
 .TP
@@ -212,8 +218,5 @@ Import a HAR capture and diff against a previous report:
 .I spider_<host>_<timestamp>.json
 Auto-saved JSON report for each scan.
 .SH AUTHOR
-Hellhound Spider is part of Project Hellhound
-.RI ( https://github.com/project-hellhound-org ).
-.SH SEE ALSO
-.BR curl (1),
-.BR nmap (1)
+.B spider
+was written by L4ZZ3RJ0D and is part of the Hellhound Pentest framework (https://github.com/project-hellhound-org).
