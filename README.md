@@ -75,9 +75,6 @@ v13.10 restructures the reconnaissance pipeline for precision and operator contr
 - **WhatWeb Technology Analysis** — Automatically integrates WhatWeb (runs concurrently with TLS checks) to identify and categorize the server runtime, CMS, frameworks, JS libraries, CDNs, and cookies. Visualized using a rich, color-coded badge category system.
 - **Bot-Bypass Browser Engine** — Leverages Playwright for standard SPA analysis and automatically falls back to Patchright for stealthy bot-bypass when meeting Cloudflare or other WAF challenges.
 - **CTF Flag Mining** (`--ctf-flag TEMPLATE` / `-K`) — Auto-scans all processed pages, JavaScript files, CSS comments, HTML data attributes, API responses, and error page traces for custom flag templates. Use `{}` as a wildcard body placeholder.
-- **Admin Probe Deduplication** — Deduplicates overlapping admin panel paths (e.g. `/admin` and `/admin/`) before probing, eliminating redundant requests.
-- **Injection Scoring Removed** — Dropped the heuristic SQLi/CMDi/SSRF candidate scoring that relied on parameter-name pattern matching. This produced a high false-positive rate; identifying real injection points is left to the operator and dedicated testing tools.
-- **Man Page** — `man spider` is now available after installation for the full command reference.
 
 ---
 
