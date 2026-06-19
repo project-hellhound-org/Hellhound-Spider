@@ -2593,6 +2593,13 @@ def _build_ctf_flag_patterns(templates: list) -> list:
     into compiled regexes.  The {} placeholder expands to [^}]{1,200}.
     Returns a list of (display_prefix, compiled_re) tuples."""
     patterns = []
+    
+    if templates:
+        # Generic CTF flag fallback: catches words containing flag/ctf followed by {...}
+        # e.g., bitflag{...}, HTB{...}, picoCTF{...}. Helps avoid misses from user typos.
+        fallback_re = re.compile(r"\b[a-zA-Z0-9_]*(?:flag|ctf)[a-zA-Z0-9_]*\{[^}\s]{4,200}\}", re.IGNORECASE)
+        patterns.append(("generic_flag{}", fallback_re))
+
     for tmpl in templates:
         tmpl = tmpl.strip()
         if not tmpl:
@@ -2604,7 +2611,8 @@ def _build_ctf_flag_patterns(templates: list) -> list:
         prefix, _, _ = tmpl.partition("{}")
         esc = re.escape(prefix) + r"\{([^}]{1,200})\}"
         try:
-            patterns.append((prefix + "{}", re.compile(esc)))
+            # Ignore case so casing mismatches don't miss the flag
+            patterns.append((prefix + "{}", re.compile(esc, re.IGNORECASE)))
         except re.error:
             pass
     return patterns
@@ -2620,7 +2628,12 @@ def scan_ctf_flags(text: str, url: str, store, emit, patterns: list) -> int:
         for m in pat.finditer(text):
             flag = m.group(0)
             if store.add_secret(flag, "CTF_Flag", url):
-                emit.warn_sev(f"[CTF-FLAG] {flag}  ← {url}", "HIGH")
+                # Print prominently for live findings (not just in the summary)
+                msg = f"\033[41m\033[1m[CTF-FLAG]\033[0m \033[1m\033[92m{flag}\033[0m  ← {url}"
+                if hasattr(emit, '_w'):
+                    emit._w(msg)
+                else:
+                    emit.warn_sev(f"[CTF-FLAG] {flag}  ← {url}", "CRITICAL")
                 found += 1
     return found
 
