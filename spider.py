@@ -60,7 +60,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "13.10"
+VERSION      = "13.11"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -1268,11 +1268,12 @@ def print_results(intel: dict, target: str, elapsed: float,
 
                                                                         
     secrets    = intel.get("secrets", [])
+    credentials = intel.get("credentials", [])
     cors       = intel.get("cors_issues", [])
     gql        = intel.get("graphql", [])
     oas        = intel.get("openapi", [])
     sourcemaps = intel.get("sourcemaps", [])
-    if any([secrets, cors, gql, oas, sourcemaps]):
+    if any([secrets, credentials, cors, gql, oas, sourcemaps]):
         # ── CTF Flags ─────────────────────────────────────────────────────────
         ctf_flags = [s for s in secrets if s.get("type") == "CTF_Flag"]
         if ctf_flags:
@@ -1288,7 +1289,43 @@ def print_results(intel: dict, target: str, elapsed: float,
                     print(f"  {C.GR}    └─{C.RST} {source}")
                 print()
 
-        emit.section("SECURITY FINDINGS")
+        # ── Credentials (identity-linked: username/email -> password/token/mfa) ──
+        if credentials:
+            emit.section(f"CREDENTIALS EXPOSED  ({len(credentials)} found)", orbital=True)
+            _cred_order = []
+            _cred_groups = {}
+            for c in credentials:
+                _idv = c.get("identity_value", "USERNAME_NOT_FOUND")
+                _src = c.get("source", "")
+                _gkey = (_idv, _src)
+                if _gkey not in _cred_groups:
+                    _cred_groups[_gkey] = []
+                    _cred_order.append(_gkey)
+                _cred_groups[_gkey].append(c)
+            for _idv, _src in _cred_order:
+                _items = _cred_groups[(_idv, _src)]
+                if nc:
+                    print(f"  [{_idv}]  <- {_src}")
+                else:
+                    _idcol = C.O if _idv == "USERNAME_NOT_FOUND" else C.G
+                    print(f"  {_idcol}{C.B}{_idv}{C.RST}  {C.GR}<- {_src}{C.RST}")
+                for c in _items:
+                    ctype = c.get("credential_type", "Secret")
+                    cval  = str(c.get("credential_value", ""))
+                    sev = "CRITICAL" if ctype in (
+                        "Password", "MFA_Secret", "MFA_Backup_Code", "Client_Secret"
+                    ) else "HIGH"
+                    if nc:
+                        print(f"      [{sev}] {ctype} = {cval}")
+                    else:
+                        sevcol = {"CRITICAL": C.BG_RED, "HIGH": C.R}.get(sev, C.GR)
+                        print(f"      {sevcol}{C.B} {sev:<8}{C.RST} {C.O}{ctype:<16}{C.RST} {cval}")
+                print()
+
+        _remaining_secrets = [s for s in secrets
+                              if s.get("type") not in ("CTF_Flag", "Hardcoded_Credential")]
+        if any([_remaining_secrets, cors, gql, oas, sourcemaps]):
+            emit.section("SECURITY FINDINGS")
     for item in gql:
         emit.finding("GraphQL", "HIGH",
                      f"Introspection OPEN — {item.get('url','')}  "
@@ -1309,6 +1346,8 @@ def print_results(intel: dict, target: str, elapsed: float,
         source  = item.get("source", "")
         if stype == "CTF_Flag":
             continue  # displayed in dedicated CTF FLAGS section above
+        if stype == "Hardcoded_Credential":
+            continue  # displayed correlated-with-identity in CREDENTIALS EXPOSED section above
         if stype in ("SecurityTxt_Comment_Leak", "SecurityTxt_Encryption_Key",
                      "SecurityTxt_Canonical_CrossDomain"):
             sev = "HIGH"
@@ -1878,6 +1917,8 @@ class Store:
         self.endpoints:    Dict[str, dict] = {}
         self.comments:     List[dict]       = []
         self.secrets:      List[dict]       = []
+        self.credentials:  List[dict]       = []
+        self._credential_seen: Set[tuple]   = set()
         self.tech_stack:   Set[str]         = set()
         self.whatweb_data: dict             = {}   # {category: [(icon, display_str), ...]}
         self.robots_paths: List[str]        = []
@@ -1926,6 +1967,7 @@ class Store:
             "url": url, "cluster": cluster(normalize(url)),
             "methods": [method.upper()],
             "params": {"query":[],"form":[],"js":[],"openapi":[],"runtime":[]},
+            "headers_detail": {"vary": [], "cookies": []},
             "observed_values": {},
             "headers": {},
             "source": [], "confidence": 0, "confidence_label": "LOW",
@@ -2279,6 +2321,27 @@ class Store:
         self.secrets.append({"content": val, "type": stype, "source": source_url})
         return True
 
+    def add_credential(self, identity_field, identity_value, cred_type, cred_value, source_url):
+\
+\
+\
+\
+\
+\
+           
+        dedup_key = (identity_value, cred_type, cred_value, source_url)
+        if dedup_key in self._credential_seen:
+            return False
+        self._credential_seen.add(dedup_key)
+        self.credentials.append({
+            "identity_field": identity_field,
+            "identity_value": identity_value,
+            "credential_type": cred_type,
+            "credential_value": cred_value,
+            "source": source_url,
+        })
+        return True
+
     def add_cors(self, url, origin_sent, reflected, creds):
         self.cors_issues.append({
             "url": url, "origin_sent": origin_sent, "reflected": reflected,
@@ -2372,6 +2435,7 @@ class Store:
             "auth_required":       sum(1 for e in eps if e["auth_required"]),
             "parameter_sensitive": sum(1 for e in eps if e["parameter_sensitive"]),
             "secrets":             len(self.secrets),
+            "credentials_exposed": len(self.credentials),
             "cors_issues":         len(self.cors_issues),
             "graphql_exposed":     len(self.graphql),
             "openapi_exposed":     len(self.openapi),
@@ -2435,6 +2499,7 @@ class Store:
                 "observed_status": e["observed_status"],
                 "params": sorted(all_params),
                 "params_detail": e["params"],
+                "headers_detail": e.get("headers_detail", {"vary": [], "cookies": []}),
                                                                                 
                                                                                          
                 "form_fields_detail": e.get("form_fields_detail", []),
@@ -2461,6 +2526,7 @@ class Store:
         data = {
             "meta": meta, "summary": summary, "endpoints": formatted_eps,
             "secrets": self.secrets, "cors_issues": self.cors_issues,
+            "credentials": self.credentials,
             "graphql": self.graphql, "openapi": self.openapi,
             "sourcemaps": self.sourcemaps, "comments": self.comments,
             "robots_disallowed": self.robots_paths,
@@ -3092,6 +3158,144 @@ class Extractor:
         if counts:
             summary = ", ".join([f"{v} {k.lower().replace('_', ' ')}" for k, v in counts.items()])
             emit.info(f"[Extract] {summary} ← {url}")
+
+    # ── Identity + credential key vocab for structured credential extraction ──
+    # Generic field-name vocab, not tied to any specific target's schema —
+    # matches common identity/credential key naming conventions broadly.
+    # Ordered by preference: prefer human-readable identifiers (username,
+    # email) over opaque numeric ids when multiple identity keys exist.
+    _IDENTITY_KEY_PRIORITY = (
+        "username", "user", "login", "loginname", "login_id", "handle",
+        "email", "email_address", "account", "accountname",
+        "full_name", "fullname", "display_name", "name",
+        "userid", "user_id", "id",
+    )
+    _IDENTITY_KEYS = frozenset(_IDENTITY_KEY_PRIORITY)
+
+    _CREDENTIAL_KEY_PATTERNS = [
+        (re.compile(r'^pass(?:word|wd)?$', re.I),                            "Password"),
+        (re.compile(r'^(?:password|passwd|pwd)_hash$', re.I),                "Password_Hash"),
+        (re.compile(r'^hashed_password$', re.I),                             "Password_Hash"),
+        (re.compile(r'^(?:mfa|totp|2fa|otp|two_factor)_secret$', re.I),      "MFA_Secret"),
+        (re.compile(r'^(?:backup|recovery)_codes?$', re.I),                  "MFA_Backup_Code"),
+        (re.compile(r'^(?:auth|access|refresh|session|api)_token$', re.I),   "Token"),
+        (re.compile(r'^api_key$', re.I),                                     "API_Key"),
+        (re.compile(r'^(?:client|app)_secret$', re.I),                       "Client_Secret"),
+        (re.compile(r'^secret$', re.I),                                      "Secret"),
+        (re.compile(r'^token$', re.I),                                       "Token"),
+    ]
+
+    _JS_OBJ_ASSIGN_RE = re.compile(
+        r'(?:window\.[A-Za-z_$][\w$]*|(?:var|let|const)\s+[A-Za-z_$][\w$]*)\s*=\s*\{'
+    )
+
+    @staticmethod
+    def _balanced_object_end(text: str, brace_start: int) -> int:
+\
+\
+\
+           
+        depth, in_str, str_ch, escape = 0, False, "", False
+        i, n = brace_start, len(text)
+        while i < n:
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == str_ch:
+                    in_str = False
+            else:
+                if ch in ('"', "'"):
+                    in_str, str_ch = True, ch
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            i += 1
+        return -1
+
+    @classmethod
+    def _walk_credential_dict(cls, obj, store, emit, url, depth=0):
+\
+\
+\
+\
+           
+        if depth > 8 or not isinstance(obj, dict):
+            return
+        identity_field = identity_value = None
+        lower_keys = {k.lower(): k for k in obj.keys() if isinstance(k, str)}
+        for pref in cls._IDENTITY_KEY_PRIORITY:
+            if pref in lower_keys:
+                orig_k = lower_keys[pref]
+                v = obj.get(orig_k)
+                if isinstance(v, (str, int)) and str(v).strip():
+                    identity_field, identity_value = orig_k, str(v)
+                    break
+        for k, v in obj.items():
+            if not isinstance(k, str) or not isinstance(v, (str, int)):
+                continue
+            for pat, ctype in cls._CREDENTIAL_KEY_PATTERNS:
+                if not pat.match(k):
+                    continue
+                val = str(v).strip()
+                if not val or val.lower() in cls._SECRET_PLACEHOLDERS:
+                    break
+                idf = identity_field or "n/a"
+                idv = identity_value or "USERNAME_NOT_FOUND"
+                if store.add_credential(idf, idv, ctype, val, url):
+                    sev = "CRITICAL" if ctype in (
+                        "Password", "MFA_Secret", "MFA_Backup_Code", "Client_Secret"
+                    ) else "HIGH"
+                    emit.warn_sev(f"[Credential] {idv} -> {ctype}={val[:60]}", sev)
+                break
+        for v in obj.values():
+            if isinstance(v, dict):
+                cls._walk_credential_dict(v, store, emit, url, depth + 1)
+            elif isinstance(v, list):
+                for item in v[:50]:
+                    if isinstance(item, dict):
+                        cls._walk_credential_dict(item, store, emit, url, depth + 1)
+
+    @classmethod
+    def credential_objects(cls, body: str, url: str, store, emit):
+\
+\
+\
+\
+\
+\
+\
+\
+           
+        if not body or "{" not in body:
+            return
+                                                                
+        for m in cls._JS_OBJ_ASSIGN_RE.finditer(body):
+            brace_idx = m.end() - 1
+            end_idx = cls._balanced_object_end(body, brace_idx)
+            if end_idx == -1:
+                continue
+            blob = body[brace_idx:end_idx + 1]
+            if len(blob) > 50_000:
+                continue
+            try:
+                obj = json.loads(blob)
+            except Exception:
+                continue
+            cls._walk_credential_dict(obj, store, emit, url)
+                                                                
+        stripped = body.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                obj = json.loads(stripped)
+                cls._walk_credential_dict(obj, store, emit, url)
+            except Exception:
+                pass
 
     @classmethod
     def secrets(cls, text, url, store, emit):
@@ -6809,6 +7013,7 @@ class Spider:
                 Extractor.js_endpoints(tag.string, url, self.store, self.emit)
                 Extractor.js_params(tag.string, url, self.store, self.emit)
                 Extractor.secrets(tag.string, url, self.store, self.emit)
+                Extractor.credential_objects(tag.string, url, self.store, self.emit)
                 Extractor.js_routes(tag.string, url, self.store, self.emit)
                 # js_comments on inline scripts is now handled inside html_comments
         for form in soup.find_all("form"):
@@ -7031,6 +7236,7 @@ class Spider:
         param_count = 0
         ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
         Extractor.secrets(text, url, self.store, self.emit)
+        Extractor.credential_objects(text, url, self.store, self.emit)
         Extractor.js_endpoints(text, url, self.store, self.emit)
         Extractor.js_params(text, url, self.store, self.emit)
         Extractor.js_comments(text, url, self.store, self.emit)
@@ -7100,10 +7306,11 @@ class Spider:
                 _vk = self.store._key(url, "GET")
                 if _vk in self.store.endpoints:
                     _vep = self.store.endpoints[_vk]
+                    _hd = _vep.setdefault("headers_detail", {"vary": [], "cookies": []})
                     for _vp in _vary_params:
-                        if _vp not in _vep["params"].get("runtime",[]):
-                            _vep["params"].setdefault("runtime",[]).append(_vp)
-                            self.emit.info(f"[Vary-Param] {_vp} ← {url}")
+                        if _vp not in _hd["vary"]:
+                            _hd["vary"].append(_vp)
+                            self.emit.info(f"[Vary-Header] {_vp} ← {url}")
 
                                                                          
                                                                                  
@@ -7113,14 +7320,15 @@ class Spider:
             _cookie_ep_key = self.store._key(url, "GET")
             if _cookie_ep_key in self.store.endpoints:
                 _cep = self.store.endpoints[_cookie_ep_key]
+                _hd = _cep.setdefault("headers_detail", {"vary": [], "cookies": []})
                 for _ck_part in _raw_cookies.split(";"):
                     _ck_name = _ck_part.strip().split("=")[0].strip()
                     _SKIP_CK = {"path","domain","expires","max-age","secure","httponly",
                                 "samesite","version","comment","priority"}
                     if _ck_name and _ck_name.lower() not in _SKIP_CK:
-                        if _ck_name not in _cep["params"].get("runtime",[]):
-                            _cep["params"].setdefault("runtime",[]).append(_ck_name)
-                            self.emit.info(f"[Cookie-Param] {_ck_name} ← {url}")
+                        if _ck_name not in _hd["cookies"]:
+                            _hd["cookies"].append(_ck_name)
+                            self.emit.info(f"[Set-Cookie] {_ck_name} ← {url}")
 
                    
         ct = (hdrs.get('Content-Type', '') or hdrs.get('content-type', '')).lower()
@@ -7131,6 +7339,7 @@ class Spider:
 
         if self.cfg.enable_extraction:
             Extractor.extract_data(body, url, self.store, self.emit)
+        Extractor.credential_objects(body, url, self.store, self.emit)
 
         if s in (401, 403):
             self.store.add_endpoint(url, source=source, score=Conf.MEDIUM, auth_required=True)
