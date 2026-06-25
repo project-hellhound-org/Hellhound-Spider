@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.11-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.12-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -60,6 +60,16 @@ playwright install chromium
 ./uninstall.sh           # Linux / macOS
 pip uninstall hellhound-spider   # Windows
 ```
+
+---
+
+## v13.12 — Parameter Map Fixes
+
+v13.12 includes fixes to the parameter map in the spider engine to ensure more robust parameter discovery and extraction.
+
+### New in v13.12
+
+- **Parameter Map Fixes** — Resolved issues in the parameter map for improved accuracy.
 
 ---
 
