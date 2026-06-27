@@ -60,7 +60,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "13.11"
+VERSION      = "13.16"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -1560,7 +1560,10 @@ class Config:
         self.enable_extraction   = kw.get("enable_extraction",   False)
         self.enable_screenshots  = kw.get("enable_screenshots",  False)
         self.screenshot_priority = kw.get("screenshot_priority", "standard")
-        self.enable_probing     = kw.get("enable_probing",     True)
+        self.enable_probing     = kw.get("enable_probing",     False)
+        self.enable_admin_probe     = kw.get("enable_admin_probe",     False)
+        self.enable_sensitive_probe = kw.get("enable_sensitive_probe", False)
+        self.enable_wayback         = kw.get("enable_wayback",         False)
         self.enable_method_disc = kw.get("enable_method_disc", True)
         self.extensions_to_ignore = kw.get("extensions_to_ignore", [
             ".jpg", ".jpeg", ".png", ".gif", ".ico", ".svg", ".css", ".js.map",
@@ -1982,6 +1985,8 @@ class Store:
             "auth_classification":  [],
             "file_upload_candidate": False,
             "screenshot":           None,
+            "dynamic_value_required": False,
+            "dynamic_value_note":      "",
         }
 
                                                                         
@@ -2061,10 +2066,19 @@ class Store:
                 added = True
         return added
 
-    def add_js_params(self, url, params):
-        key = self._key(url, "GET")
+    def add_js_params(self, url, params, method=None):
+        if method is None:
+            # Legacy/no-method callers: if we already know this URL under a
+            # non-GET method (e.g. discovered via js_endpoints), attach the
+            # params there instead of spawning a duplicate GET-keyed entry.
+            method = "GET"
+            for m in ("POST", "PUT", "PATCH", "DELETE", "GET"):
+                if self._key(url, m) in self.endpoints:
+                    method = m
+                    break
+        key = self._key(url, method)
         if key not in self.endpoints:
-            self.endpoints[key] = self._new_ep(url, "GET")
+            self.endpoints[key] = self._new_ep(url, method)
         ep  = self.endpoints[key]
         new = [p for p in params if p not in ep["params"]["js"]]
         ep["params"]["js"].extend(new)
@@ -2468,6 +2482,7 @@ class Store:
             "unauthenticated_apis":   sum(1 for e in eps if e.get("unauthenticated_api")),
             "sensitive_data_sources": sum(1 for e in eps if e.get("sensitive_data_source")),
             "legacy_endpoints":       sum(1 for e in eps if e.get("legacy_endpoint")),
+            "dynamic_value_endpoints": sum(1 for e in eps if e.get("dynamic_value_required")),
         }
         
                                                 
@@ -2521,6 +2536,8 @@ class Store:
                                                                                      
                 "legacy_endpoint":  e.get("legacy_endpoint", False),
                 "legacy_reason":    e.get("legacy_reason", ""),
+                "dynamic_value_required": e.get("dynamic_value_required", False),
+                "dynamic_value_note":      e.get("dynamic_value_note", ""),
             })
 
         data = {
@@ -2812,12 +2829,113 @@ class Extractor:
                                            
                                                                                    
     _API_RE = [
-        r'["\']([/][a-zA-Z0-9_\-\.\/]*(?:api|v\d+|graphql|admin|auth|login|logout|rest|search|data|internal|upload|download)[a-zA-Z0-9_\-\.\/]*(?:\?[^"\'#\s]*)?)["\']',
+        # Verb/call-bearing patterns first — these carry method information
+        # via call syntax (axios.post(...) etc), so they must win the
+        # per-path dedup race over the generic catch-all below.
         r'(?:fetch|axios)\s*\(\s*["\']([^"\'#\s]{5,})["\']',
         r'\.\s*(?:get|post|put|delete|patch)\s*\(\s*["\']([^"\'#\s]{5,})["\']',
-        r'`\$\{[^}]+\}(/[a-zA-Z0-9_\-\/]+(?:\?[^`#\s]*)?)`',
         r'(?:fetch|axios|\.\s*(?:get|post|put|delete|patch))\s*\(\s*["\']([/][^"\'#\s]{3,})["\']',
+        # Backtick template-literal path, e.g. `/screen/?key=${x}`,
+        # `${id}/profile`, or `/api/user/${id}/profile` — any mix of
+        # literal URL-safe segments and ${...} interpolations.
+        r'`(\/(?:[a-zA-Z0-9_\-\/?=&]|\$\{[^}]+\})*)`',
+        # Generic catch-all: any quoted string that looks API-ish. Kept
+        # last so it never shadows the more specific call-syntax matches
+        # above for the same path.
+        r'["\']([/][a-zA-Z0-9_\-\.\/]*(?:api|v\d+|graphql|admin|auth|login|logout|rest|search|data|internal|upload|download)[a-zA-Z0-9_\-\.\/]*(?:\?[^"\'#\s]*)?)["\']',
     ]
+    # Index of the template-literal pattern above — matches from here may
+    # contain a ${...} runtime interpolation that needs flagging downstream.
+    _TEMPLATE_PATTERN_IDX = 3
+
+    # Explicit method key in an options object: fetch-style `method:` or
+    # jQuery $.ajax-style `type:`. Value restricted to real HTTP verbs to
+    # avoid false hits on unrelated `type: 'something'` usage.
+    _JS_METHOD_RE = re.compile(
+        r'(?:method|type)\s*:\s*["\'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["\']',
+        re.I
+    )
+    # Verb implied by call syntax itself, e.g. axios.post(...) / $.post(...)
+    # — these never write out a literal method:/type: key.
+    _JS_VERB_CALL_RE = re.compile(r'\.\s*(get|post|put|delete|patch)\s*\(', re.I)
+    # A bare options-variable passed as the 2nd call arg, e.g. fetch(url, opts)
+    _JS_VAR_OPTS_RE  = re.compile(r'^\s*,\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)')
+
+    @classmethod
+    def _enclosing_call_span(cls, text, pos, max_back=2000, max_fwd=2000):
+        """
+        Walk outward from `pos` to find the nearest enclosing balanced
+        parens — e.g. for a position anywhere inside `fetch('/x', {...})`,
+        return the span from that call's '(' to its matching ')'. This
+        scopes method detection to the call that actually contains the
+        match, instead of a fixed character window that can spill into
+        unrelated, nearby calls in densely-packed JS. Falls back to a
+        small fixed window if no enclosing parens are found.
+        """
+        depth, i = 0, pos - 1
+        back_limit = max(0, pos - max_back)
+        start_paren = None
+        while i >= back_limit:
+            c = text[i]
+            if c == ')':
+                depth += 1
+            elif c == '(':
+                if depth == 0:
+                    start_paren = i
+                    break
+                depth -= 1
+            i -= 1
+        if start_paren is None:
+            return (max(0, pos - 300), min(len(text), pos + 300))
+        depth, j = 0, start_paren
+        fwd_limit = min(len(text), start_paren + max_fwd)
+        end_paren = None
+        while j < fwd_limit:
+            c = text[j]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    end_paren = j
+                    break
+            j += 1
+        if end_paren is None:
+            return (start_paren, min(len(text), pos + 300))
+        return (start_paren, end_paren + 1)
+
+    @classmethod
+    def _detect_js_method(cls, text, match):
+        """
+        Best-effort HTTP method for a matched fetch/axios/$.ajax/etc. call.
+        Tries, in order: (1) an explicit method:/type: key scoped to the
+        enclosing call expression (not a fixed window, to avoid bleeding
+        into neighboring calls); (2) the verb implied by call syntax itself
+        (axios.post(...), $.post(...)); (3) a bare options variable passed
+        as the 2nd argument, resolved back to its own declaration elsewhere
+        in the file. Returns None (caller defaults to GET) if inconclusive.
+        """
+        start, end = cls._enclosing_call_span(text, match.end())
+        start, end = min(start, match.start()), max(end, match.end())
+        ctx = text[start:end]
+        m1 = cls._JS_METHOD_RE.search(ctx)
+        if m1:
+            return m1.group(1).upper()
+        m2 = cls._JS_VERB_CALL_RE.search(match.group(0))
+        if m2:
+            return m2.group(1).upper()
+        vm = cls._JS_VAR_OPTS_RE.match(text[match.end(): match.end() + 60])
+        if vm:
+            varname = vm.group(1)
+            decl_re = re.compile(
+                r'(?:const|let|var)\s+' + re.escape(varname) + r'\s*=\s*\{([^}]{1,400})\}'
+            )
+            dm = decl_re.search(text)
+            if dm:
+                m3 = cls._JS_METHOD_RE.search(dm.group(1))
+                if m3:
+                    return m3.group(1).upper()
+        return None
 
                                                                                      
     _SPA_BODY_MARKERS = (
@@ -2956,8 +3074,23 @@ class Extractor:
 
     @classmethod
     def _obj_keys(cls, block):
-        keys = re.findall(r'["\']?([a-zA-Z_$][a-zA-Z0-9_$]*)["\']?\s*:', block)
-        return [k for k in keys if k not in cls._JS_NOISE and len(k) > 1]
+        # The capturing regex for _PARAM_RE excludes literal braces, so `block`
+        # never contains nested objects — a plain comma split is safe here.
+        keys = []
+        for token in block.split(","):
+            token = token.strip()
+            if not token or token.startswith("..."):
+                continue
+            if ":" in token:
+                k = token.split(":", 1)[0].strip().strip("\"'")
+            else:
+                # ES6 shorthand property, e.g. `{ email }` == `{ email: email }`
+                k = token.strip().strip("\"'")
+            if not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', k):
+                continue
+            if k not in cls._JS_NOISE and len(k) > 1:
+                keys.append(k)
+        return keys
 
     @classmethod
     def _build_var_url_map(cls, text):
@@ -2977,20 +3110,63 @@ class Extractor:
         return var_map
 
     @classmethod
+    def _find_url_via_options_var(cls, text, match_start):
+        """
+        Handles the `const opts = { method: 'X', body: ... }; fetch(url, opts)`
+        pattern: if this params match sits inside an object literal being
+        assigned to a bare variable, look forward for where that variable
+        is later passed as a call's options argument and pull the URL from
+        that call instead of guessing by text proximity.
+        """
+        pre = text[max(0, match_start - 600): match_start]
+        decls = list(re.finditer(r'(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{', pre))
+        if not decls:
+            return None
+        last = decls[-1]
+        # Bail if a `};` shows up between that declaration and our match —
+        # means we've already left that object literal.
+        if re.search(r'\}\s*;', pre[last.end():]):
+            return None
+        varname = last.group(1)
+        use_m = re.search(
+            r'\(\s*["\']([^"\']+)["\']\s*,\s*' + re.escape(varname) + r'\s*\)', text
+        )
+        return use_m.group(1) if use_m else None
+
+    @classmethod
     def _find_url_for_params(cls, text, match_start, match_end, base_url, var_map):
-\
-\
-\
-                                                                      
+
         url_lit = r"""["']([/][a-zA-Z0-9_\-\./]+(?:\?[^"'#\s]*)?)["']"""
-        pre_window = text[max(0, match_start - 600): match_start]
+
+        # 1. Prefer a URL literal inside the SAME enclosing call expression
+        # as this params block — e.g. fetch('/x', { body: JSON.stringify({...}) })
+        # or axios.post('/x', {...}). Far more precise than text proximity.
+        span_start, span_end = cls._enclosing_call_span(text, match_end)
+        span_start, span_end = min(span_start, match_start), max(span_end, match_end)
+        call_matches = list(re.finditer(url_lit, text[span_start:span_end]))
+        if call_matches:
+            return urljoin(base_url, call_matches[0].group(1).split("?")[0])
+
+        # 2. The options-variable pattern (const opts = {...}; fetch(url, opts)) —
+        # the params and the URL never share a call expression at all.
+        via_var = cls._find_url_via_options_var(text, match_start)
+        if via_var and via_var.startswith("/"):
+            return urljoin(base_url, via_var.split("?")[0])
+
+        # 3. Fall back to whichever URL literal is textually nearer, in
+        # either direction — comparing actual distances rather than always
+        # preferring a backward match regardless of how far away it is.
+        pre_window  = text[max(0, match_start - 600): match_start]
         pre_matches = list(re.finditer(url_lit, pre_window))
-        if pre_matches:
-            return urljoin(base_url, pre_matches[-1].group(1).split("?")[0])
         post_window = text[match_end: match_end + 500]
-        post_m = re.search(url_lit, post_window)
-        if post_m:
+        post_m      = re.search(url_lit, post_window)
+        pre_dist  = (len(pre_window) - pre_matches[-1].end()) if pre_matches else None
+        post_dist = post_m.start() if post_m else None
+        if pre_dist is not None and (post_dist is None or pre_dist <= post_dist):
+            return urljoin(base_url, pre_matches[-1].group(1).split("?")[0])
+        if post_dist is not None:
             return urljoin(base_url, post_m.group(1).split("?")[0])
+
         for varname, vpath in var_map.items():
             if varname.startswith("__prop_"):
                 if abs(int(varname[7:]) - match_start) <= 800:
@@ -3031,9 +3207,15 @@ class Extractor:
                     continue
                 turl = cls._find_url_for_params(text, m.start(), m.end(), base_url, var_map)
                 resolved = (turl != base_url)
+                # Body/params blocks (e.g. body: JSON.stringify({...})) usually
+                # sit inside the same fetch/axios/$.ajax call as an explicit
+                # method:/type: option, an implied verb (axios.post), or a
+                # referenced options variable — let the shared detector check
+                # all three rather than assuming GET.
+                detected_method = cls._detect_js_method(text, m)
                 if resolved:
                                                                            
-                    if store.add_js_params(turl, keys):
+                    if store.add_js_params(turl, keys, method=detected_method):
                         emit.info("[JS-Params] %s -> %s" % (keys, turl))
                 elif _is_js_file:
                                                                                              
@@ -3041,7 +3223,7 @@ class Extractor:
                     emit.info("[JS-Orphan] %s (no target URL found in %s)" % (keys, base_url))
                 else:
                                                                               
-                    if store.add_js_params(turl, keys):
+                    if store.add_js_params(turl, keys, method=detected_method):
                         emit.info("[JS-Params] %s -> %s" % (keys, turl))
 
     @classmethod
@@ -3432,11 +3614,23 @@ class Extractor:
     def js_endpoints(cls, text, base_url, store, emit):
                                                                            
         _seen_paths: set = set()
-        for pat in cls._API_RE:
+        for idx, pat in enumerate(cls._API_RE):
             for m in re.finditer(pat, text):
                 raw = m.group(1)
                 if not raw or not raw.startswith("/") or len(raw) < 3:
                     continue
+
+                dynamic_expr = None
+                if idx == cls._TEMPLATE_PATTERN_IDX and "${" in raw:
+                    # Template-literal path containing one or more runtime
+                    # interpolations, e.g. /screen/?key=${tokenData.hash} or
+                    # /api/user/${id}/profile. Keep the raw expression for
+                    # the report, and collapse it to a generic placeholder
+                    # so the path still normalizes/clusters sensibly.
+                    dynamic_expr = raw
+                    raw = re.sub(r'\$\{[^}]+\}', '{param}', raw)
+                    if raw in ("/", "/{param}", ""):
+                        continue
                                                                                 
                 _parsed    = urlparse(raw)
                 _qs_params = list(parse_qs(_parsed.query).keys())
@@ -3449,11 +3643,22 @@ class Extractor:
                 if _dedup_key in _seen_paths:
                     continue
                 _seen_paths.add(_dedup_key)
-                store.add_endpoint(full, source="JS_Analysis", score=Conf.MEDIUM)
+
+                detected_method = cls._detect_js_method(text, m) or "GET"
+
+                ep = store.add_endpoint(full, method=detected_method, source="JS_Analysis", score=Conf.MEDIUM)
+                if dynamic_expr and ep is not None:
+                    ep["dynamic_value_required"] = True
+                    ep["dynamic_value_note"] = (
+                        f"Path built from a runtime value in client JS (`{dynamic_expr}`) — "
+                        "substitute the actual value (usually obtained from a prior API "
+                        "response in the same flow) before requesting; it will not resolve as listed."
+                    )
                 if _qs_params:
-                    store.add_js_params(full, _qs_params)
+                    store.add_js_params(full, _qs_params, method=detected_method)
                     emit.info(f"[JS-QS-Params] {_qs_params} ← {full}")
-                emit.info(f"[JS-API] {full}")
+                tag = " — requires runtime value" if dynamic_expr else ""
+                emit.info(f"[JS-API] {full} ({detected_method}){tag}")
 
     @classmethod
     def html_comments(cls, soup, url, store, emit, base_url=None, discover_url=None, depth=0):
@@ -7583,20 +7788,31 @@ class Spider:
 
                                              
                 self.emit.animator.update(0, "Recon Sensitive Files + Admin Panels")
-                await asyncio.gather(
-                    probe_sensitive_files(session, self.target, self.store, self.emit, self.rl),
-                    probe_admin_panels(session, self.target, self.store, self.emit, self.rl),
-                )
+                _probe_tasks = []
+                if self.cfg.enable_sensitive_probe:
+                    _probe_tasks.append(
+                        probe_sensitive_files(session, self.target, self.store, self.emit, self.rl))
+                else:
+                    self.emit.always_info("[SensitiveFiles] Skipped (use --sensitive-probe/-e to enable)")
+                if self.cfg.enable_admin_probe:
+                    _probe_tasks.append(
+                        probe_admin_panels(session, self.target, self.store, self.emit, self.rl))
+                else:
+                    self.emit.always_info("[AdminProbe] Skipped (use --admin-probe/-m to enable)")
+                if _probe_tasks:
+                    await asyncio.gather(*_probe_tasks)
 
                 if self.cfg.wordlist:
                     self.emit.animator.update(0, "Recon Wordlist Brute Force")
                     await probe_wordlist(session, self.target, self.store, self.emit, self.rl, self.cfg.wordlist)
 
-                if not self.is_ip_target:
+                if not self.is_ip_target and self.cfg.enable_wayback:
                     self.emit.animator.update(0, "Recon Wayback")
                     _wayback = WaybackProbe(self.target, self.store, self.queue,
                                              self.emit, self.rl, self.is_valid)
                     await _wayback.run(session)
+                elif not self.is_ip_target:
+                    self.emit.always_info("[Wayback] Skipped (use --wayback/-y to enable)")
 
                 self.emit.animator.update(0, "Recon Well-Known")
                 for _wk in _WELL_KNOWN_PATHS:
@@ -8039,8 +8255,19 @@ def _build_parser() -> argparse.ArgumentParser:
     flags = p.add_argument_group(f"{C.CY}Feature Flags{C.RST}")
     flags.add_argument("--no-playwright", "-P", action="store_true",
                        help="Disable headless browser SPA scanning (patchright > playwright-stealth > manual JS)")
-    flags.add_argument("--no-probing",    "-p", action="store_true",
-                       help="Disable intelligent probing phase")
+    flags.add_argument("--probe",         "-p", action="store_true",
+                       help="Enable intelligent probing phase (extra method-discovery "
+                            "requests per endpoint — off by default, costs time on big targets)")
+    flags.add_argument("--admin-probe",   "-m", action="store_true",
+                       help="Probe common admin/management panel paths (off by default — "
+                            "skip if you already know the target has none)")
+    flags.add_argument("--sensitive-probe", "-e", action="store_true",
+                       help="Probe known sensitive file paths (.env, .git, backups, etc.) "
+                            "(off by default — skip if you already know the target's layout)")
+    flags.add_argument("--wayback",       "-y", action="store_true",
+                       help="Query the Wayback Machine for archived URLs (off by default — "
+                            "pointless on fresh/CTF targets with no archive history, and costs "
+                            "an external API round trip)")
     flags.add_argument("--spa-interact",  "-I", action="store_true",
                        help="Enable SPA form filling and button clicking (authorized targets only)")
     flags.add_argument("--no-cors",       "-R", action="store_true",
@@ -8057,7 +8284,8 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Disable noise path filter (include VCS browser UI, CDN paths, socket.io in output)")
     flags.add_argument("--no-crawl",      "-N", action="store_true",
                        help="Skip BFS link crawling — run only recon/probe modules "
-                            "(robots, sitemap, admin probe, sensitive files, wordlist, subdomains, wayback)")
+                            "(robots, sitemap, wordlist, subdomains, and any enabled "
+                            "opt-in probes: admin, sensitive-files, wayback)")
 
     scope = p.add_argument_group(f"{C.CY}Scope{C.RST}")
     scope.add_argument("--subdomains",        "-b", action="store_true",
@@ -8187,7 +8415,10 @@ def main():
         verbose         = args.verbose,
         use_playwright  = not args.no_playwright,
         enable_spa_interact = args.spa_interact,
-        enable_probing  = not args.no_probing,
+        enable_probing  = args.probe,
+        enable_admin_probe     = args.admin_probe,
+        enable_sensitive_probe = args.sensitive_probe,
+        enable_wayback         = args.wayback,
         enable_cors     = not args.no_cors,
         enable_graphql  = not args.no_graphql,
         enable_openapi      = not args.no_openapi,

@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.12-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.16-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -63,39 +63,14 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.12 — Parameter Map Fixes
+## v13.16 — Modular Probing & JS Interpolation
 
-v13.12 includes fixes to the parameter map in the spider engine to ensure more robust parameter discovery and extraction.
+v13.16 introduces opt-in modular probing (admin panels, sensitive files, and Wayback machine queries are now off by default for faster baseline scans) and adds detection for dynamic runtime values in JavaScript endpoint extraction.
 
-### New in v13.12
+### New in v13.16
 
-- **Parameter Map Fixes** — Resolved issues in the parameter map for improved accuracy.
-
----
-
-## v13.11 — Credential Extraction
-
-v13.11 introduces automated credential extraction from JavaScript objects and response bodies, as well as improved tracking of `Vary` and `Set-Cookie` headers for enhanced parameter discovery.
-
-### New in v13.11
-
-- **Credential Extraction** — Automatically identifies and extracts passwords, tokens, API keys, and other secrets embedded directly within complex JavaScript objects and response bodies.
-- **Detailed Header Tracking** — Accurately extracts `Vary` and `Set-Cookie` parameters to provide deeper insight into session and caching behavior without polluting the runtime parameters.
-
----
-
-## v13.10 — Recon Overhaul
-
-v13.10 restructures the reconnaissance pipeline for precision and operator control — subdomain enumeration is now opt-in, a new wordlist brute-force engine ships with soft-404 filtering, and the unreliable injection-candidate scoring heuristic has been removed entirely.
-
-### New in v13.10
-
-- **No-Crawl Mode** (`--no-crawl` / `-N`) — Run only the recon and probing modules (robots, sitemap, admin panels, sensitive files, wordlist, subdomains, Wayback) without BFS link crawling. Useful for fast, targeted reconnaissance.
-- **Wordlist Brute Force** (`--wordlist FILE`) — Directory and file discovery using a user-supplied wordlist. Responses are filtered through the same canary-fingerprint and soft-404 logic used by the sensitive-file probe, so noisy SPA/wildcard-200 targets don't flood results.
-- **Opt-in Subdomain Enumeration** (`--subdomains`) — Certificate transparency subdomain enumeration is now opt-in instead of running by default, reducing scan noise on targets where subdomains are out of scope.
-- **WhatWeb Technology Analysis** — Automatically integrates WhatWeb (runs concurrently with TLS checks) to identify and categorize the server runtime, CMS, frameworks, JS libraries, CDNs, and cookies. Visualized using a rich, color-coded badge category system.
-- **Bot-Bypass Browser Engine** — Leverages Playwright for standard SPA analysis and automatically falls back to Patchright for stealthy bot-bypass when meeting Cloudflare or other WAF challenges.
-- **CTF Flag Mining** (`--ctf-flag TEMPLATE` / `-K`) — Auto-scans all processed pages, JavaScript files, CSS comments, HTML data attributes, API responses, and error page traces for custom flag templates. Use `{}` as a wildcard body placeholder.
+- **Opt-in Modular Probing** (`--probe`, `--admin-probe`, `--sensitive-probe`, `--wayback`) — Probing for admin panels, sensitive files, and Wayback Machine archived URLs is now off by default. Use the new flags to enable them when appropriate.
+- **Dynamic JS Value Detection** — JavaScript endpoint extraction now detects template-literal paths containing runtime interpolations (e.g. `/api/user/${id}`) and flags them as requiring dynamic values.
 
 ---
 
@@ -170,7 +145,10 @@ spider <target> [options]
 | Flag | Short | Description |
 |---|---|---|
 | `--no-playwright` | `-P` | HTTP crawl only, no headless browser |
-| `--no-probing` | `-p` | Skip Method Oracle and CORS probes |
+| `--probe` | `-p` | Enable intelligent probing phase |
+| `--admin-probe` | `-m` | Probe common admin/management panel paths |
+| `--sensitive-probe` | `-e` | Probe known sensitive file paths |
+| `--wayback` | `-y` | Query the Wayback Machine for archived URLs |
 | `--spa-interact` | `-I` | Enable SPA form filling and button clicking |
 | `--no-cors` | `-R` | Skip CORS misconfiguration checks |
 | `--no-graphql` | `-G` | Skip GraphQL introspection probe |
@@ -178,7 +156,7 @@ spider <target> [options]
 | `--extract` | `-x` | Enable passive data extraction (emails, IPs, buckets) |
 | `--screenshot` | `-s` | Capture screenshots. Preset: `all`, `standard`, `blocked`, `errors`, `api`, `admin`, or custom regex |
 | `--no-filter` | `-F` | Disable noise path filter (include repo-browser and CDN paths) |
-| `--no-crawl` | `-N` | Skip BFS crawling — run only recon and probe modules |
+| `--no-crawl` | `-N` | Skip BFS crawling — run only recon and enabled opt-in probe modules |
 | `--har` | | Seed crawl from a browser-exported HAR file |
 
 ### Scope
