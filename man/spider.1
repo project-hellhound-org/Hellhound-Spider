@@ -88,9 +88,18 @@ Disable headless browser SPA scanning. Without this flag, \fBspider\fR
 attempts patchright, then playwright-stealth, then falls back to manual
 JavaScript analysis.
 .TP
-.BR \-p ", " \-\-no\-probing
-Disable the intelligent active-probing phase (admin panels, sensitive
-files, GraphQL, OpenAPI).
+.BR \-p ", " \-\-probe
+Enable intelligent probing phase (extra method-discovery requests per
+endpoint). Off by default.
+.TP
+.BR \-m ", " \-\-admin\-probe
+Probe common admin/management panel paths. Off by default.
+.TP
+.BR \-e ", " \-\-sensitive\-probe
+Probe known sensitive file paths (.env, .git, backups, etc.). Off by default.
+.TP
+.BR \-y ", " \-\-wayback
+Query the Wayback Machine for archived URLs. Off by default.
 .TP
 .BR \-I ", " \-\-spa\-interact
 Enable SPA form filling and button clicking during headless browser
