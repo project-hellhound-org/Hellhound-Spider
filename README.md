@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-13.16-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-13.19-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -63,11 +63,11 @@ pip uninstall hellhound-spider   # Windows
 
 ---
 
-## v13.16 — Modular Probing & JS Interpolation
+## v13.19 — Modular Probing & JS Interpolation
 
-v13.16 introduces opt-in modular probing (admin panels, sensitive files, and Wayback machine queries are now off by default for faster baseline scans) and adds detection for dynamic runtime values in JavaScript endpoint extraction.
+v13.19 introduces opt-in modular probing (admin panels, sensitive files, and Wayback machine queries are now off by default for faster baseline scans) and adds detection for dynamic runtime values in JavaScript endpoint extraction.
 
-### New in v13.16
+### New in v13.19
 
 - **Opt-in Modular Probing** (`--probe`, `--admin-probe`, `--sensitive-probe`, `--wayback`) — Probing for admin panels, sensitive files, and Wayback Machine archived URLs is now off by default. Use the new flags to enable them when appropriate.
 - **Dynamic JS Value Detection** — JavaScript endpoint extraction now detects template-literal paths containing runtime interpolations (e.g. `/api/user/${id}`) and flags them as requiring dynamic values.

@@ -60,7 +60,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "13.16"
+VERSION      = "13.19"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -1884,6 +1884,34 @@ _NOISE_PATH_RE = re.compile(
                                                                      
                                                                      
                                                                    
+# ── Next.js / framework-internal path filter ────────────────────────────────
+# These paths are Next.js runtime plumbing extracted from client-side JS
+# (router internals, build-manifest, data-prefetch templates, etc.).
+# They are NOT routable application endpoints and should never appear in
+# the actionable endpoint list — they create false positives every time.
+_NEXTJS_INTERNAL_RE = re.compile(
+    r'^(?:'
+    # Next.js page-component names that are never real routes
+    r'/_(?:app|document|error|middleware)'
+    # _next/data prefetch paths — always framework-generated, needs real buildId
+    r'|/_next/data(?:/|$)'
+    # _next static/image/webpack asset paths (path-only match; query already stripped)
+    r'|/_next/(?:static|image|webpack)(?:/|$)'
+    # Generic framework-internal prefixes (Nuxt, Remix, etc.)
+    r'|/__(?:remix|nuxt|vite|webpack|sveltekit)_'
+    r').*$',
+    re.I
+)
+
+# Patterns for pure-interpolation paths that collapse to nothing meaningful:
+# /{param}{param}, /index{param}, /{param}{param}{param} — these are Next.js
+# router internals like `/${g}${o}` or `/index${e}` that have no fixed path
+# prefix to anchor them as real app routes.
+_PURE_PLACEHOLDER_RE = re.compile(
+    r'^/(\{param\})+$'          # /{param}, /{param}{param}, /{param}{param}{param}...
+    r'|^/index\{param\}$',       # /index{param}
+)
+
 _SOCKETIO_RE = re.compile(r'/socket\.io/\??.*EIO=', re.I)
 
 def normalize(url: str) -> str:
@@ -1937,6 +1965,9 @@ class Store:
                                                      
                                                                               
         self.js_orphan_params: Dict[str, List[str]] = {}
+        # Paths confirmed by NextJS _buildManifest.js — used for
+        # post-crawl JS_Analysis endpoint reconciliation.
+        self._manifest_pages: Set[str] = set()
                                                                                  
                                                                                  
         self.socketio_endpoints: List[dict] = []
@@ -2002,7 +2033,18 @@ class Store:
                                                              
         if _SOCKETIO_RE.search(url):
             self.add_socketio(url, method)
-            return self.endpoints.get(self._key(url, method))                  
+            return self.endpoints.get(self._key(url, method))
+        # Drop Next.js / framework-internal paths and pure-placeholder paths —
+        # these are never real app endpoints and are the primary source of
+        # false positives on Next.js targets.
+        try:
+            _ep_path = urlparse(url).path
+            if _NEXTJS_INTERNAL_RE.match(_ep_path):
+                return None
+            if _PURE_PLACEHOLDER_RE.match(_ep_path):
+                return None
+        except Exception:
+            pass
         key = self._key(url, method)
         if key not in self.endpoints:
             self.endpoints[key] = self._new_ep(url, method)
@@ -2066,7 +2108,15 @@ class Store:
                 added = True
         return added
 
-    def add_js_params(self, url, params, method=None):
+    def add_js_params(self, url, params, method=None, create_if_missing=True):
+        # Never attach params to framework-internal paths — prevents _app,
+        # _document etc. from accumulating React-internal keys like _result/_status
+        # even when the var-map heuristic thinks it resolved the target URL.
+        try:
+            if _NEXTJS_INTERNAL_RE.match(urlparse(url).path):
+                return False
+        except Exception:
+            pass
         if method is None:
             # Legacy/no-method callers: if we already know this URL under a
             # non-GET method (e.g. discovered via js_endpoints), attach the
@@ -2078,6 +2128,11 @@ class Store:
                     break
         key = self._key(url, method)
         if key not in self.endpoints:
+            # Don't create a phantom endpoint if caller opted out — this
+            # prevents framework-internal JS (e.g. Next.js _app, _document)
+            # from spawning empty, sourceless endpoint entries.
+            if not create_if_missing:
+                return False
             self.endpoints[key] = self._new_ep(url, method)
         ep  = self.endpoints[key]
         new = [p for p in params if p not in ep["params"]["js"]]
@@ -2087,18 +2142,22 @@ class Store:
             ep["confidence_label"] = Conf.label(ep["confidence"])
         return bool(new)
 
+    # React lazy-loading internals that appear as orphan params in virtually
+    # every minified React/Next.js bundle — they are never real API params.
+    _REACT_INTERNAL_PARAMS = frozenset({
+        '_result', '_status', '_payload', '_init', '_source', '_owner',
+        '_store', '_self', '_debugSource', '_debugOwner', '_context',
+    })
+
     def add_js_orphan_params(self, js_file_url: str, params: List[str]):
-\
-\
-\
-\
-\
-           
+        # Filter React lazy-loading internals before they pollute the report
+        params = [p for p in params if p not in self._REACT_INTERNAL_PARAMS]
+        if not params:
+            return
         bucket = self.js_orphan_params.setdefault(js_file_url, [])
         for p in params:
             if p and p not in bucket:
                 bucket.append(p)
-
     def is_same_domain(self, url: str, ref_url: str) -> bool:
                                                                                 
         try:
@@ -2486,6 +2545,30 @@ class Store:
         }
         
                                                 
+        # ── Next.js manifest reconciliation ────────────────────────────────
+        # When the manifest parser ran and produced pages, any JS_Analysis-only
+        # endpoint whose collapsed path is NOT in the manifest and has no
+        # observed HTTP status is very likely a build-artifact false positive
+        # (e.g. /ROOT/{param} from router internals). Demote it to LOW and
+        # tag it so the pentest report doesn't treat it as actionable.
+        if self._manifest_pages:
+            for ep in self.endpoints.values():
+                srcs = ep.get("source", [])
+                # Only touch endpoints that came exclusively from JS extraction
+                if srcs and all(s in ("JS_Analysis", "JS_Route", "JS_File")
+                                for s in srcs):
+                    ep_path = urlparse(ep["url"]).path or "/"
+                    # Normalise dynamic segments to match manifest format
+                    ep_path_norm = re.sub(r'\{param\}', '{param}', ep_path)
+                    if ep_path_norm not in self._manifest_pages:
+                        # No observed status and not in manifest → suspect FP
+                        if not ep.get("observed_status"):
+                            ep["confidence"]       = min(ep["confidence"], Conf.LOW)
+                            ep["confidence_label"] = "LOW"
+                            ep.setdefault("sensitive_signals", [])
+                            if "suspect_js_artifact" not in ep["sensitive_signals"]:
+                                ep["sensitive_signals"].append("suspect_js_artifact")
+
         formatted_eps = []
         for e in eps:
                                
@@ -3222,8 +3305,11 @@ class Extractor:
                     store.add_js_orphan_params(base_url, keys)
                     emit.info("[JS-Orphan] %s (no target URL found in %s)" % (keys, base_url))
                 else:
-                                                                              
-                    if store.add_js_params(turl, keys, method=detected_method):
+                    # turl == base_url (HTML page): only attach if the endpoint
+                    # already exists — don't create a phantom entry whose sole
+                    # source is an unresolved JS param block.
+                    if store.add_js_params(turl, keys, method=detected_method,
+                                           create_if_missing=False):
                         emit.info("[JS-Params] %s -> %s" % (keys, turl))
 
     @classmethod
@@ -3610,6 +3696,64 @@ class Extractor:
                                     ep["params"]["query"].append(p)
         return found
 
+    # ── Next.js _buildManifest.js parser ─────────────────────────────────────
+    # _buildManifest.js contains the authoritative page list as a JS object:
+    #   self.__BUILD_MANIFEST={"sortedPages":["/","/passes","/access-card",...]}
+    # This is far more reliable than template extraction — zero false positives,
+    # catches every SSG/SSR page that exists, and works on any Next.js target.
+    _BUILD_MANIFEST_RE = re.compile(
+        r'(?:self\.__BUILD_MANIFEST\s*=|__BUILD_MANIFEST\s*=\s*\{)'
+        r'.*?"sortedPages"\s*:\s*(\[[^\]]+\])',
+        re.S
+    )
+    _BUILD_MANIFEST_URL_RE = re.compile(r'"(/[^"]*)"')
+
+    @classmethod
+    def nextjs_build_manifest(cls, text, base_url, store, emit):
+        """Parse Next.js _buildManifest.js to extract the authoritative page list.
+
+        This is triggered any time Spider fetches a JS file whose URL ends with
+        _buildManifest.js — it extracts sortedPages which is the complete list of
+        all pre-rendered/server-rendered routes, far more reliable than template
+        extraction from router internals.
+        """
+        m = cls._BUILD_MANIFEST_RE.search(text)
+        if not m:
+            # Fallback: try the minified form where the array is assigned directly
+            m2 = re.search(r'"sortedPages"\s*:\s*(\[[^\]]+\])', text)
+            if not m2:
+                return 0
+            pages_raw = m2.group(1)
+        else:
+            pages_raw = m.group(1)
+
+        found = 0
+        for page_m in cls._BUILD_MANIFEST_URL_RE.finditer(pages_raw):
+            page = page_m.group(1)
+            if not page or page == "/404" or page == "/_error":
+                continue
+            # Next.js dynamic segments: [id] → {param}, [...slug] → {param}
+            clean = re.sub(r'\[\.\.\.[^\]]+\]', '{param}', page)
+            clean = re.sub(r'\[[^\]]+\]', '{param}', clean)
+            full = urljoin(base_url, clean)
+            ep = store.add_endpoint(full, source="NextJS_Manifest", score=Conf.HIGH)
+            # Track this path so reconciliation can demote JS_Analysis endpoints
+            # that don't appear in the manifest (likely build-artifact noise).
+            store._manifest_pages.add(clean)
+            if ep is not None:
+                emit.info(f"[Manifest] {page} → {full}")
+                found += 1
+                # Mark dynamic segments so downstream knows a value is needed
+                if '{param}' in clean:
+                    ep["dynamic_value_required"] = True
+                    ep["dynamic_value_note"] = (
+                        f"Next.js dynamic route `{page}` — "
+                        "substitute the actual segment value before requesting."
+                    )
+        if found:
+            emit.always_info(f"[Manifest] Extracted {found} page route(s) from _buildManifest.js")
+        return found
+
     @classmethod
     def js_endpoints(cls, text, base_url, store, emit):
                                                                            
@@ -3629,7 +3773,7 @@ class Extractor:
                     # so the path still normalizes/clusters sensibly.
                     dynamic_expr = raw
                     raw = re.sub(r'\$\{[^}]+\}', '{param}', raw)
-                    if raw in ("/", "/{param}", ""):
+                    if raw in ("/", "/{param}", "") or _PURE_PLACEHOLDER_RE.match(raw):
                         continue
                                                                                 
                 _parsed    = urlparse(raw)
@@ -7440,6 +7584,14 @@ class Spider:
         ep_count = 0
         param_count = 0
         ctf_patterns = getattr(self.cfg, "ctf_flag_patterns", [])
+        # _buildManifest.js is the authoritative Next.js page list — parse it
+        # first so its routes populate the store before generic extraction runs.
+        # Skip all other extraction on this file: it contains no API calls, no
+        # secrets, and no meaningful param blocks — only router plumbing.
+        _url_path = url.split("?")[0]
+        if _url_path.endswith("_buildManifest.js"):
+            Extractor.nextjs_build_manifest(text, self.target, self.store, self.emit)
+            return
         Extractor.secrets(text, url, self.store, self.emit)
         Extractor.credential_objects(text, url, self.store, self.emit)
         Extractor.js_endpoints(text, url, self.store, self.emit)
@@ -7497,6 +7649,33 @@ class Spider:
         
                              
         self.store.record_status(url, 'GET', s)
+
+        # ── Redirect Location tracking ──────────────────────────────────────
+        # When the server issues a 3xx redirect, the Location header tells us
+        # the real destination. We queue it for crawling AND extract any query
+        # params from it — this catches patterns like POST /api/login → 302
+        # Location: /access-card?id=1, which reveals the ?id param and the
+        # /access-card route that would otherwise be missed without auth.
+        if s in (301, 302, 307, 308):
+            _loc = hdrs.get("location", "") or hdrs.get("Location", "")
+            if _loc:
+                _loc_full = urljoin(url, _loc)
+                if self.is_valid(_loc_full):
+                    _loc_parsed = urlparse(_loc_full)
+                    _loc_qs = list(parse_qs(_loc_parsed.query).keys())
+                    # Register the destination as an endpoint
+                    _loc_ep = self.store.add_endpoint(
+                        _loc_full, source="Redirect_Location", score=Conf.MEDIUM)
+                    if _loc_qs and _loc_ep is not None:
+                        self.store.add_js_params(_loc_full, _loc_qs, method="GET",
+                                                 create_if_missing=False)
+                        self.emit.info(
+                            f"[Redirect-Params] {_loc_qs} ← {url} → {_loc_full}")
+                    # Queue destination for crawling if not yet visited
+                    _loc_norm = normalize(_loc_full)
+                    if _loc_norm not in self.visited:
+                        self.queue.put_nowait((_loc_full, depth + 1, "Redirect_Location"))
+                        self.emit.info(f"[Redirect→Queue] {_loc_full}")
 
                                                                         
                                                                              

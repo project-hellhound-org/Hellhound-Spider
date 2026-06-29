@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="hellhound-spider",
-    version="13.16",
+    version="13.19",
     description="Autonomous web crawler and recon engine for security testing — SPA + Non-SPA crawling, header analysis, subdomain enumeration, and intelligence classification",
     author="Sree Danush S",
     author_email="lazzer@gmail.com",
