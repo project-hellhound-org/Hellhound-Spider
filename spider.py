@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import csv
 import hashlib
 import io
@@ -8974,7 +8975,15 @@ def _do_run(target: str, cfg: Config, emit,
                            cfg.output_format, emit, save_json=getattr(cfg, "save_json", False))
 
     intel  = json.loads(spider.store.export(target, fmt="json"))
-    result = {"raw": "", "intel": intel}
+    # Pre-render the report in whatever --format was requested so pipe mode
+    # (and anything else that wants a clean machine payload) doesn't have to
+    # re-walk the store — just grabs this string straight off the result.
+    fmt_requested = getattr(cfg, "output_format", "json") or "json"
+    if fmt_requested == "json":
+        formatted = json.dumps(intel, indent=2)
+    else:
+        formatted = spider.store.export(target, fmt=fmt_requested)
+    result = {"raw": "", "intel": intel, "formatted": formatted}
 
                             
     print_results(intel, target, elapsed, emit, saved_path=json_path,
@@ -9065,7 +9074,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    p.add_argument("target", nargs="?", help="Target URL  (e.g. https://example.com)")
+    p.add_argument("target", nargs="?",
+                   help='Target URL  (e.g. https://example.com). Pass "-" or simply '
+                        "omit this argument while piping newline-separated URLs in on "
+                        "stdin to scan multiple targets in one run.")
 
     scan = p.add_argument_group(f"{C.CY}Scan Options{C.RST}")
     scan.add_argument("--depth",       "-d", type=int, default=4,  metavar="N",
@@ -9106,9 +9118,12 @@ def _build_parser() -> argparse.ArgumentParser:
     out.add_argument("--out",    "-o", type=str, default=None, metavar="FILE",
                      help="Extra output file  (only written when --save-json "
                           "or --format is also given, or FILE ends in .json)")
-    out.add_argument("--format", "-f", type=str, default="json",
+    out.add_argument("--format", "-f", type=str, default=None,
                      choices=["json","jsonl","csv","burp","urls","nuclei"],
-                     help="Extra output format  (default: json)")
+                     help="Extra output format  (default: json; when stdout is piped "
+                          "or redirected and --format isn't given, defaults to urls "
+                          "instead, since that's what everything downstream wants — "
+                          "httpx, nuclei, etc.)")
     out.add_argument("--save-json", "-j", action="store_true",
                      help="Save the full JSON report to disk (opt-in — off by default; "
                           "results still print to the terminal either way)")
@@ -9187,186 +9202,276 @@ def _build_parser() -> argparse.ArgumentParser:
     util.add_argument("--upgrade", "-U", action="store_true",
                       help="Upgrade Hellhound-Spider to the latest version")
 
+    pipe = p.add_argument_group(f"{C.CY}Piping{C.RST}")
+    pipe.add_argument("--pipe", "-Q", action="store_true",
+                      help="Machine-pipe mode: the banner, progress bars, and the full "
+                           "colored report are routed to stderr; stdout carries ONLY the "
+                           "structured report (--format controls which: json, jsonl, csv, "
+                           "urls, nuclei, burp). Auto-enabled whenever stdout is not a "
+                           "terminal, so '| jq' / '| nuclei' / '> out.json' already just "
+                           "work without this flag — pass it explicitly to force clean "
+                           "output even when stdout IS a terminal. With multiple targets "
+                           "(stdin) and --format json (the default), each target's report "
+                           "is written as one compact line — proper JSONL.")
+
     return p
+
+
+def _read_stdin_targets() -> List[str]:
+    """One target per line on stdin; blank lines and '#'-comments skipped."""
+    targets = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        targets.append(line)
+    return targets
 
 
 def main():
     parser = _build_parser()
     args   = parser.parse_args()
 
+    # Machine-pipe mode: explicit --pipe, or auto-detected because stdout
+    # isn't a terminal (piped into another tool, or redirected to a file).
+    pipe_mode = bool(args.pipe) or not sys.stdout.isatty()
+
+    # No --format given: default to plain URLs when piped/redirected (what
+    # httpx, nuclei, and basically everything downstream actually wants),
+    # and to the full JSON report when run normally in a terminal.
+    if args.format is None:
+        args.format = "urls" if pipe_mode else "json"
+
+    # ── Resolve target(s): single positional arg, or newline-delimited stdin ──
+    stdin_targets: Optional[List[str]] = None
+    if args.target in (None, "-"):
+        if not sys.stdin.isatty():
+            stdin_targets = _read_stdin_targets()
+        if not stdin_targets:
+            if args.target is None:
+                parser.print_help()
+            else:
+                sys.stderr.write('[!] "-" given as target but no input found on stdin\n')
+            sys.exit(1)
+
+    targets      = stdin_targets if stdin_targets else [args.target]
+    multi_target = len(targets) > 1
+    real_stdout  = sys.stdout
+
     emit = Emit(verbose=args.verbose)
-    print_banner()
 
-    if args.upgrade:
-        emit.always_info("Initiating system upgrade...")
-        if os.path.exists("update.sh"):
-            os.system("bash update.sh")
+    # Everything printed inside this block — banner, per-request logs, the
+    # full colored report, progress bars — is human output. In pipe mode we
+    # route all of it to stderr so real_stdout stays reserved for the
+    # structured report(s) written further down, letting this tool compose
+    # in a shell pipeline, e.g.:
+    #     cat targets.txt | ./spider.py --pipe | jq -r '.summary'
+    #     ./spider.py https://target.com -f urls --pipe | nuclei
+    _human_ctx = contextlib.redirect_stdout(sys.stderr) if pipe_mode else contextlib.nullcontext()
+
+    with _human_ctx:
+        print_banner()
+
+        if args.upgrade:
+            emit.always_info("Initiating system upgrade...")
+            if os.path.exists("update.sh"):
+                os.system("bash update.sh")
+            else:
+                emit.warn("update.sh not found in the current directory.")
+            sys.exit(0)
+
+        if not shutil.which("whatweb"):
+            emit.always_info(f"{C.Y}[!] [WhatWeb] Technology fingerprinter is not installed.{C.RST}")
+            emit.always_info(f"    For rich technology stack fingerprinting, run: {C.G}sudo apt install whatweb{C.RST}\n")
+
+
+        nc = emit._nc
+        def _pf(label, value, vc=None):
+            vc = vc or C.W
+            if nc:
+                print(f"  {label:<18}  {_strip(value)}")
+            else:
+                print(f"  {C.CYD}{label:<18}{C.RST}  {vc}{value}{C.RST}")
+
+        _pf("Target",      f"{len(targets)} targets (stdin)" if multi_target else targets[0])
+        _pf("Pipe Mode",   "on — stdout carries the structured report only" if pipe_mode else "off",
+            C.G if pipe_mode else C.GR)
+        _pf("Depth",       str(args.depth))
+        _pf("Concurrency", str(args.concurrency))
+        _pf("Timeout",     f"{args.timeout}s")
+        _pf("Max Runtime", f"{args.max_runtime}s" if args.max_runtime > 0 else "unlimited")
+        _pf("Liveness Check",
+            "disabled" if args.no_liveness_check else "enabled",
+            C.GR if args.no_liveness_check else C.G)
+        if not args.no_playwright and PLAYWRIGHT_AVAILABLE:
+            if PATCHRIGHT_AVAILABLE:
+                pw_status = "playwright  (+patchright available as bot-bypass fallback)"
+            else:
+                pw_status = "playwright  (bot-bypass fallback: patchright not detected)"
         else:
-            emit.warn("update.sh not found in the current directory.")
-        sys.exit(0)
+            pw_status = "disabled"
+            if PLAYWRIGHT_ERROR and args.verbose:
+                pw_status += f"  {C.R}({PLAYWRIGHT_ERROR}){C.RST}"
 
-    if not args.target:
-        parser.print_help()
-        sys.exit(1)
+        _pf("Browser Engine", pw_status,
+            C.G if (not args.no_playwright and PLAYWRIGHT_AVAILABLE) else C.GR)
+        _pf("Verbose",
+            "on" if args.verbose else "off",
+            C.G if args.verbose else C.GR)
+        _pf("Extraction",
+            "enabled" if args.extract else "disabled",
+            C.G if args.extract else C.GR)
+        _pf("Screenshots",
+            f"enabled ({args.screenshot or 'standard'})" if args.screenshot else "disabled",
+            C.G if args.screenshot else C.GR)
+        if getattr(args, "ctf", False):
+            if args.concurrency == 12:
+                args.concurrency = 20
+            if args.timeout == 15:
+                args.timeout = 5
+            args.admin_probe = True
+            args.sensitive_probe = True
+            args.probe = True
+            args.no_graphql = False
+            args.no_openapi = False
+            args.no_cors = False
+            if not args.ctf_flag:
+                args.ctf_flag = "FLAG{},flag{}"
 
-    if not shutil.which("whatweb"):
-        emit.always_info(f"{C.Y}[!] [WhatWeb] Technology fingerprinter is not installed.{C.RST}")
-        emit.always_info(f"    For rich technology stack fingerprinting, run: {C.G}sudo apt install whatweb{C.RST}\n")
+        cookies = SessionManager.parse_cookies(args.cookie)
+        xhdrs   = SessionManager.parse_auth_header(args.auth or "")
 
-                           
-    nc = emit._nc
-    def _pf(label, value, vc=None):
-        vc = vc or C.W
-        if nc:
-            print(f"  {label:<18}  {_strip(value)}")
-        else:
-            print(f"  {C.CYD}{label:<18}{C.RST}  {vc}{value}{C.RST}")
+        if args.basic_auth:
+            basic_hdr = SessionManager.parse_basic_auth(args.basic_auth)
+            if basic_hdr:
+                xhdrs.update(basic_hdr)
+            else:
+                emit.warn('[Auth] --basic-auth expects "user:pass" format — ignoring.')
 
-    _pf("Target",      args.target)
-    _pf("Depth",       str(args.depth))
-    _pf("Concurrency", str(args.concurrency))
-    _pf("Timeout",     f"{args.timeout}s")
-    _pf("Max Runtime", f"{args.max_runtime}s" if args.max_runtime > 0 else "unlimited")
-    _pf("Liveness Check",
-        "disabled" if args.no_liveness_check else "enabled",
-        C.GR if args.no_liveness_check else C.G)
-    if not args.no_playwright and PLAYWRIGHT_AVAILABLE:
-        if PATCHRIGHT_AVAILABLE:
-            pw_status = "playwright  (+patchright available as bot-bypass fallback)"
-        else:
-            pw_status = "playwright  (bot-bypass fallback: patchright not detected)"
-    else:
-        pw_status = "disabled"
-        if PLAYWRIGHT_ERROR and args.verbose:
-            pw_status += f"  {C.R}({PLAYWRIGHT_ERROR}){C.RST}"
+        custom_hdrs = SessionManager.parse_custom_headers(getattr(args, "header", None))
+        if custom_hdrs:
+            _bad = [h for h in (getattr(args, "header", None) or []) if h and ":" not in h]
+            if _bad:
+                emit.warn(f'[Auth] Ignored malformed --header value(s) (expected "Name: Value"): {_bad}')
+            xhdrs.update(custom_hdrs)  # -X wins on name clash with --auth/--basic-auth
 
-    _pf("Browser Engine", pw_status,
-        C.G if (not args.no_playwright and PLAYWRIGHT_AVAILABLE) else C.GR)
-    _pf("Verbose",
-        "on" if args.verbose else "off",
-        C.G if args.verbose else C.GR)
-    _pf("Extraction",
-        "enabled" if args.extract else "disabled",
-        C.G if args.extract else C.GR)
-    _pf("Screenshots",
-        f"enabled ({args.screenshot or 'standard'})" if args.screenshot else "disabled",
-        C.G if args.screenshot else C.GR)
-    if getattr(args, "ctf", False):
-        if args.concurrency == 12:
-            args.concurrency = 20
-        if args.timeout == 15:
-            args.timeout = 5
-        args.admin_probe = True
-        args.sensitive_probe = True
-        args.probe = True
-        args.no_graphql = False
-        args.no_openapi = False
-        args.no_cors = False
-        if not args.ctf_flag:
-            args.ctf_flag = "FLAG{},flag{}"
+        if isinstance(args.cookie, dict):
+            _dropped = [k for k in args.cookie
+                        if k.lower() in ("authorization","x-api-key","x-auth-token",
+                                         "x-csrf-token","x-access-token")]
+            if _dropped:
+                emit.warn(f"[Auth] Stripped non-cookie auth keys from --cookie input: {_dropped}. "
+                          f"Use --auth for these instead.")
 
-    cookies = SessionManager.parse_cookies(args.cookie)
-    xhdrs   = SessionManager.parse_auth_header(args.auth or "")
+        if cookies:
+            emit.always_info(f"[Auth] Cookies loaded  →  {list(cookies.keys())}")
+        if xhdrs:
+            emit.always_info(f"[Auth] Headers sent    →  {list(xhdrs.keys())}")
+        if not cookies and not xhdrs:
+            emit.always_info("[Auth] No credentials — unauthenticated scan")
 
-    if args.basic_auth:
-        basic_hdr = SessionManager.parse_basic_auth(args.basic_auth)
-        if basic_hdr:
-            xhdrs.update(basic_hdr)
-        else:
-            emit.warn('[Auth] --basic-auth expects "user:pass" format — ignoring.')
+        cfg_kwargs = dict(
+            request_delay   = args.delay,
+            max_depth       = args.depth,
+            concurrency     = args.concurrency,
+            timeout         = args.timeout,
+            max_runtime     = args.max_runtime,
+            no_liveness_check = args.no_liveness_check,
+            verbose         = args.verbose,
+            use_playwright  = not args.no_playwright,
+            enable_spa_interact = args.spa_interact,
+            enable_deep_spa     = args.deep_spa,
+            enable_probing  = args.probe,
+            enable_admin_probe     = args.admin_probe,
+            enable_sensitive_probe = args.sensitive_probe,
+            enable_wayback         = args.wayback,
+            enable_cors     = not args.no_cors,
+            enable_graphql  = not args.no_graphql,
+            enable_openapi      = not args.no_openapi,
+            har_file            = getattr(args, "har", None),
+            enable_noise_filter = not args.no_filter,
+            enable_extraction   = args.extract,
+            enable_screenshots = args.screenshot is not None,
+            screenshot_priority = args.screenshot if args.screenshot else "standard",
+            output_format   = args.format,
+            output_file     = args.out,
+            save_json       = args.save_json,
+            follow_subdomains = args.follow_subdomains,
+            follow_redirects  = args.follow_redirects,
+            enable_subdomain_enum = args.subdomains,
+            wordlist          = args.wordlist,
+            wordlist_recursive = args.wordlist_recursive,
+            wordlist_max_depth = args.wordlist_depth,
+            no_crawl          = args.no_crawl,
+            ctf_flag_templates = [t.strip() for t in args.ctf_flag.split(",") if t.strip()]
+                                 if args.ctf_flag else [],
+            extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
+                                if args.scope else [],
+        )
 
-    custom_hdrs = SessionManager.parse_custom_headers(getattr(args, "header", None))
-    if custom_hdrs:
-        _bad = [h for h in (getattr(args, "header", None) or []) if h and ":" not in h]
-        if _bad:
-            emit.warn(f'[Auth] Ignored malformed --header value(s) (expected "Name: Value"): {_bad}')
-        xhdrs.update(custom_hdrs)  # -X wins on name clash with --auth/--basic-auth
+        print()
 
-    if isinstance(args.cookie, dict):
-        _dropped = [k for k in args.cookie
-                    if k.lower() in ("authorization","x-api-key","x-auth-token",
-                                     "x-csrf-token","x-access-token")]
-        if _dropped:
-            emit.warn(f"[Auth] Stripped non-cookie auth keys from --cookie input: {_dropped}. "
-                      f"Use --auth for these instead.")
-
-    if cookies:
-        emit.always_info(f"[Auth] Cookies loaded  →  {list(cookies.keys())}")
-    if xhdrs:
-        emit.always_info(f"[Auth] Headers sent    →  {list(xhdrs.keys())}")
-    if not cookies and not xhdrs:
-        emit.always_info("[Auth] No credentials — unauthenticated scan")
-
-    cfg = Config(
-        request_delay   = args.delay,
-        max_depth       = args.depth,
-        concurrency     = args.concurrency,
-        timeout         = args.timeout,
-        max_runtime     = args.max_runtime,
-        no_liveness_check = args.no_liveness_check,
-        verbose         = args.verbose,
-        use_playwright  = not args.no_playwright,
-        enable_spa_interact = args.spa_interact,
-        enable_deep_spa     = args.deep_spa,
-        enable_probing  = args.probe,
-        enable_admin_probe     = args.admin_probe,
-        enable_sensitive_probe = args.sensitive_probe,
-        enable_wayback         = args.wayback,
-        enable_cors     = not args.no_cors,
-        enable_graphql  = not args.no_graphql,
-        enable_openapi      = not args.no_openapi,
-        har_file            = getattr(args, "har", None),
-        enable_noise_filter = not args.no_filter,
-        enable_extraction   = args.extract,
-        enable_screenshots = args.screenshot is not None,
-        screenshot_priority = args.screenshot if args.screenshot else "standard",
-        output_format   = args.format,
-        output_file     = args.out,
-        save_json       = args.save_json,
-        follow_subdomains = args.follow_subdomains,
-        follow_redirects  = args.follow_redirects,
-        enable_subdomain_enum = args.subdomains,
-        wordlist          = args.wordlist,
-        wordlist_recursive = args.wordlist_recursive,
-        wordlist_max_depth = args.wordlist_depth,
-        no_crawl          = args.no_crawl,
-        ctf_flag_templates = [t.strip() for t in args.ctf_flag.split(",") if t.strip()]
-                             if args.ctf_flag else [],
-        extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
-                            if args.scope else [],
-    )
-
-    try:
-        cfg.validate()
-    except ValueError as e:
-        emit.warn(str(e))
-        sys.exit(1)
-
-    print()
-    result = _do_run(args.target, cfg, emit, cookies, xhdrs)
-
-                                                                        
-    if args.diff:
+    # ── Run each target; write its structured report straight to the real
+    # stdout the moment it finishes (streamed, not batched at the end) ──────
+    exit_code = 0
+    for idx, tgt in enumerate(targets, 1):
+        cfg = Config(**cfg_kwargs)
         try:
-            old  = Path(args.diff).read_text()
-            new  = json.dumps(result["intel"], indent=2)
-            diff = diff_crawls(old, new)
-            emit.section(f"DIFF  vs  {args.diff}")
-            emit.row("Added",   str(diff["summary"]["added"]),   value_colour=C.R)
-            emit.row("Removed", str(diff["summary"]["removed"]), value_colour=C.GR)
-            emit.row("Changed", str(diff["summary"]["changed"]), value_colour=C.Y)
-            if diff["added"]:
-                print()
-                emit.always_info(f"New endpoints ({len(diff['added'])}):")
-                for ep in diff["added"]:
-                    emit.finding("NEW", "HIGH", ep["url"])
-            if diff["removed"]:
-                print()
-                emit.always_info(f"Gone endpoints ({len(diff['removed'])}):")
-                for ep in diff["removed"]:
-                    emit.finding("GONE", "INFO", ep["url"])
-        except Exception as e:
-            emit.warn(f"[Diff] Error: {type(e).__name__} {e}")
+            cfg.validate()
+        except ValueError as e:
+            emit.warn(str(e))
+            exit_code = 1
+            continue
+
+        with (contextlib.redirect_stdout(sys.stderr) if pipe_mode else contextlib.nullcontext()):
+            if multi_target:
+                emit.always_info(f"[Batch] [{idx}/{len(targets)}] {tgt}")
+            try:
+                result = _do_run(tgt, cfg, emit, cookies, xhdrs)
+            except Exception as e:
+                emit.warn(f"[Batch] {tgt} failed: {type(e).__name__} {e}")
+                if pipe_mode:
+                    err_line = json.dumps({"target": tgt, "error": str(e)})
+                    real_stdout.write(err_line + "\n")
+                    real_stdout.flush()
+                exit_code = 1
+                continue
+
+            if args.diff and not multi_target:
+                try:
+                    old  = Path(args.diff).read_text()
+                    new  = json.dumps(result["intel"], indent=2)
+                    diff = diff_crawls(old, new)
+                    emit.section(f"DIFF  vs  {args.diff}")
+                    emit.row("Added",   str(diff["summary"]["added"]),   value_colour=C.R)
+                    emit.row("Removed", str(diff["summary"]["removed"]), value_colour=C.GR)
+                    emit.row("Changed", str(diff["summary"]["changed"]), value_colour=C.Y)
+                    if diff["added"]:
+                        print()
+                        emit.always_info(f"New endpoints ({len(diff['added'])}):")
+                        for ep in diff["added"]:
+                            emit.finding("NEW", "HIGH", ep["url"])
+                    if diff["removed"]:
+                        print()
+                        emit.always_info(f"Gone endpoints ({len(diff['removed'])}):")
+                        for ep in diff["removed"]:
+                            emit.finding("GONE", "INFO", ep["url"])
+                except Exception as e:
+                    emit.warn(f"[Diff] Error: {type(e).__name__} {e}")
+
+        # ── Structured report → real stdout ─────────────────────────────────
+        if pipe_mode:
+            if multi_target and (cfg.output_format or "json") == "json":
+                # One compact JSON object per target — proper JSONL, so a
+                # downstream reader can process the stream line by line
+                # instead of waiting for the whole batch to finish.
+                payload = json.dumps(result["intel"], separators=(",", ":"))
+            else:
+                payload = result["formatted"]
+            real_stdout.write(payload.rstrip("\n") + "\n")
+            real_stdout.flush()
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
