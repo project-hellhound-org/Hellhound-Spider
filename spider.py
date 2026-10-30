@@ -61,7 +61,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "13.21"
+VERSION      = "14.0"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -96,8 +96,18 @@ class C:
     BG_GREEN  = "\033[102m\033[30m"                                    
     BG_BLUE   = "\033[44m\033[97m"                               
 
+        # In pipe mode the human-readable report (banner, findings, colors)
+        # is redirected to stderr while stdout carries the clean machine
+        # payload, so color should track wherever that report actually
+        # lands — not stdout, which may be a pipe even while the terminal
+        # the user is watching (stderr) is a real TTY. main() points this
+        # at stderr before constructing Emit when pipe mode is active;
+        # it stays None (→ stdout, old behaviour) otherwise.
+_COLOR_STREAM = None
+
 def _no_color() -> bool:
-    return not sys.stdout.isatty() or bool(os.environ.get("NO_COLOR"))
+    stream = _COLOR_STREAM or sys.stdout
+    return not stream.isatty() or bool(os.environ.get("NO_COLOR"))
 
 def _strip(s: str) -> str:
     return re.sub(r'\033\[[^m]*m', '', s)
@@ -200,10 +210,16 @@ class CLIAnimator:
         if label: self.label = label
 
     def _clear(self):
-                                                                      
+        # \x1b[2K erases the WHOLE current line regardless of its length,
+        # so there's no need to guess a padding width (the old "overwrite
+        # with N spaces" approach broke whenever the line was longer than
+        # the terminal was wide: the overwrite-string itself wrapped onto a
+        # second row, "\r" only rewound to that wrapped row, and subsequent
+        # redraws left stray blank rows behind — the live-crawl spacing
+        # glitch).
         if not self._nc and self._last_line:
             with self.emit.lock:
-                sys.stdout.write("\r" + " " * (len(_strip(self._last_line)) + 15) + "\r")
+                sys.stdout.write("\r\x1b[2K")
                 sys.stdout.flush()
 
     def run(self):
@@ -227,8 +243,12 @@ class CLIAnimator:
                     else:
                         anim_label += f"{C.RD}{c.lower()}{C.RST}" if not self._nc else c.lower()
 
-                                                                                          
-                bar_w = 50
+
+                # Kept narrow on purpose: the old 50-char bar pushed the
+                # whole animated line past ~80-90 visible columns, which
+                # wraps in a typical/narrow terminal and breaks the \r-based
+                # redraw math below (see _clear()'s comment).
+                bar_w = 20
                 chars = "⡀⡄⡆⡇⣇⣧⣷⣿"
                 bar = ""
                 for i in range(bar_w):
@@ -247,17 +267,13 @@ class CLIAnimator:
                         stats = "---"
 
                 line = f"\r  {anim_label:<25}  {bar}  {stats}" if not self._nc else f"\r  {self.label} {self.current}/{self.total}"
-                
-                                                                       
-                if self._last_line and len(_strip(line)) < len(_strip(self._last_line)):
-                    pad = " " * (len(_strip(self._last_line)) - len(_strip(line)) + 5)
-                else:
-                    pad = "    "
-                
+
                 self._last_line = line
-                                           
+                # \x1b[K erases from the cursor to the end of the line, so
+                # whatever was there before (even if longer) is cleanly
+                # gone — no padding-width guess needed.
                 with self.emit.lock:
-                    sys.stdout.write(line + pad)
+                    sys.stdout.write(line + "\x1b[K")
                     sys.stdout.flush()
                 
                 time.sleep(0.06)
@@ -286,14 +302,16 @@ class Emit:
                                                                         
 
     def _w(self, line: str):
-                                                                                  
+        # Interleaving a normal log line with the animator's live-redrawn
+        # progress line: erase whatever the animator currently has on the
+        # line (\x1b[2K — the full line, not a guessed-length overwrite)
+        # before printing, so the animator's next tick redraws cleanly on
+        # its own fresh line afterwards instead of leaving stray blank rows.
         with self.lock:
             if self.animator.active:
-                                               
                 if self.animator._last_line:
-                    sys.stdout.write("\r" + " " * (len(_strip(self.animator._last_line)) + 15) + "\r")
+                    sys.stdout.write("\r\x1b[2K")
                 print(_strip(line) if self._nc else line, flush=True)
-                                                             
             else:
                 print(_strip(line) if self._nc else line, flush=True)
 
@@ -870,7 +888,30 @@ def print_results(intel: dict, target: str, elapsed: float,
                 col = {"CONFIRMED": C.G, "HIGH": C.Y, "MEDIUM": C.CYD, "LOW": C.GR}.get(con, C.GR)
                 print(f"  {C.MG}●{C.RST} {col}{con:<12}{C.RST} {C.W}{u}{C.RST}")
 
-                                                                        
+
+    backtrack_eps = [e for e in eps
+                     if any(s in ("Backtrack", "DirListing") for s in e.get("source", []))]
+    if backtrack_eps:
+        n_listings = sum(1 for e in backtrack_eps if "DirListing" in e.get("source", []))
+        emit.section(
+            f"PARENT DIRECTORY BACKTRACKING  ({len(backtrack_eps)} accessible, "
+            f"{n_listings} with autoindex exposed)", orbital=True
+        )
+        if not nc:
+            emit.row("Note", "Ancestor directories the forward crawl never linked to directly — "
+                              "reached by walking up from discovered file paths",
+                     icon="○", label_colour=C.CY, value_colour=C.W)
+        for ep in sorted(backtrack_eps, key=lambda e: e.get("url","")):
+            u = ep.get("url","")
+            is_listing = "DirListing" in ep.get("source", [])
+            tag = "DirListing" if is_listing else "Backtrack"
+            if nc:
+                print(f"  ● {tag:<12} {u}")
+            else:
+                col = C.R if is_listing else C.Y
+                print(f"  {col}●{C.RST} {col}{tag:<12}{C.RST} {C.W}{u}{C.RST}")
+
+
     comments = intel.get("comments", [])
     cmt_filtered = []   # built below, displayed after SECURITY FINDINGS
     if comments:
@@ -1176,27 +1217,12 @@ def print_results(intel: dict, target: str, elapsed: float,
                     u  = req.get("url", "")
                     print(f"    {C.GR}{branch}{C.RST} {mc}{m:<6}{C.RST} {C.W}{u}{C.RST}")
 
-    orphans = intel.get("js_orphan_params", [])
+    # JS ORPHAN PARAMS section intentionally removed from the printed report
+    # (2026-10) — low-value noise in practice (hundreds of unattributed JS
+    # identifier/property names flagged as "fuzz hints"). The underlying
+    # data is still collected in the JSON export (intel["js_orphan_params"])
+    # for anyone who wants it; it's just not dumped into the terminal report.
 
-    if orphans:
-        total_orphan = sum(len(o["params"]) for o in orphans)
-        emit.section(f"JS ORPHAN PARAMS  ({total_orphan} unattributed params, {len(orphans)} files)", orbital=True)
-        if not nc:
-            emit.row("Note", "These params were found in JS files with no resolvable target URL",
-                     icon="○", label_colour=C.R, value_colour=C.Y)
-            emit.row("Usage", "Wordlist / fuzz hints — do NOT inject at the JS file URL",
-                     icon="○", label_colour=C.R, value_colour=C.Y)
-        for item in orphans:
-            js_file = item["js_file"]
-            params  = item["params"]
-            short   = js_file if len(js_file) <= 60 else js_file[:57] + "…"
-            if nc:
-                print(f"    {short}  ->  {', '.join(params)}")
-            else:
-                print(f"  {C.GR}○{C.RST} {C.GR}{short}{C.RST}")
-                emit.leader_row("HINTS", ", ".join(f"{C.CYD}{p}{C.RST}" for p in params))
-
-                                                                          
     socketio = intel.get("socketio_endpoints", [])
     if socketio:
         emit.section(f"WEBSOCKET DETECTED  ({len(socketio)} socket.io endpoint(s))", orbital=True)
@@ -1637,6 +1663,14 @@ class Config:
         self.wordlist_recursive = kw.get("wordlist_recursive", False)
         self.wordlist_max_depth = kw.get("wordlist_max_depth", 2)
         self.no_crawl           = kw.get("no_crawl",           False)
+        # After the forward crawl, walk UP from every discovered path to
+        # probe ancestor directories the crawler never visited directly —
+        # e.g. it saw /js/foo.min.js and /js/bar.min.js via <script src>,
+        # but nobody ever linked to /js/ itself. If that directory (or any
+        # ancestor of it) is reachable unauthenticated, it's extra attack
+        # surface a pure link-following crawl misses entirely. On by
+        # default; disable with --no-backtrack.
+        self.enable_backtrack   = kw.get("enable_backtrack",   True)
         self.ctf_flag_templates = kw.get("ctf_flag_templates", [])
                                                                 
         self.extra_scope: frozenset = frozenset(kw.get("extra_scope", []))
@@ -1985,6 +2019,14 @@ _PURE_PLACEHOLDER_RE = re.compile(
 )
 
 _SOCKETIO_RE = re.compile(r'/socket\.io/\??.*EIO=', re.I)
+
+# Apache mod_autoindex / common directory-listing-theme column-sort links —
+# e.g. "?C=N;O=D" (sort by Column=Name/Modified/Size/Description,
+# Order=Ascending/Descending). Same listing, different sort order, not new
+# content — but naive link-following (crawler, backtracking, anything) will
+# otherwise treat each sort permutation as a distinct page with a "param"
+# worth reporting, flooding the parameter map with noise.
+_AUTOINDEX_SORT_QS_RE = re.compile(r'^C=[A-Za-z0-9];?O=[AD]$')
 
 def _resolve_app_path(base_url: str, raw_path: str, app_root: str = "") -> str:
     """Resolve a root-relative path (e.g. "/api/posts") extracted from JS
@@ -3696,6 +3738,43 @@ class Extractor:
             except Exception:
                 pass
 
+    _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+    @staticmethod
+    def _base58_decode(s: str) -> Optional[bytes]:
+        try:
+            n = 0
+            for ch in s:
+                n = n * 58 + Extractor._BASE58_ALPHABET.index(ch)
+            body = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+            # Leading '1' characters in base58 encode leading 0x00 bytes.
+            leading_zeros = len(s) - len(s.lstrip("1"))
+            return b"\x00" * leading_zeros + body
+        except (ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _is_valid_btc_address(addr: str) -> bool:
+        """Real Base58Check validation — version byte + 20-byte hash + a
+        4-byte checksum that must equal the first 4 bytes of
+        SHA256(SHA256(payload)) — not just "looks base58-shaped".
+
+        The bare charset/length regex alone (1 char + 25-34 base58 chars)
+        matches an enormous amount of unrelated text: minified JS
+        identifiers, hashes, obfuscated variable names, cache-busting
+        tokens — anything that happens to avoid 0/O/I/l. A real address is
+        the ~1-in-4-billion-combinations subset whose trailing bytes
+        actually are the checksum of the rest; validating that eliminates
+        false positives instead of guessing from surface shape (has an
+        uppercase letter, no long repeated run, etc.).
+        """
+        decoded = Extractor._base58_decode(addr)
+        if not decoded or len(decoded) != 25:
+            return False
+        payload, checksum = decoded[:-4], decoded[-4:]
+        digest = hashlib.sha256(hashlib.sha256(payload).digest()).digest()
+        return digest[:4] == checksum
+
     @classmethod
     def secrets(cls, text, url, store, emit):
         for pat, stype in cls._SECRET_RE:
@@ -3709,16 +3788,8 @@ class Extractor:
                 if any(ph in val_lo for ph in cls._SECRET_PLACEHOLDERS):
                     continue
                                               
-                if stype == "Bitcoin_Address":
-                                                                                    
-                    if not any(c.isupper() for c in val):
-                        continue
-                                                                          
-                    if re.search(r'(.)(\1){3,}', val):
-                        continue
-                                                                        
-                    if not (25 <= len(val) <= 34):
-                        continue
+                if stype == "Bitcoin_Address" and not cls._is_valid_btc_address(val):
+                    continue
                 if store.add_secret(val, stype, url):
                     emit.warn(f"[SECRET:{stype}] {val[:80]}")
 
@@ -7372,6 +7443,8 @@ class Spider:
         if _SOCKETIO_RE.search(url):
             self.store.add_socketio(url)
             return False
+        if _AUTOINDEX_SORT_QS_RE.match(p.query or ""):
+            return False
         if self.cfg.enable_noise_filter and _is_noise_path(p.path):
             return False
         return bool(p.scheme in ("http","https"))
@@ -8472,6 +8545,151 @@ class Spider:
                                         auth_required=True)
                 self.emit.always_success(f"[OIDC] {key}: {ep_url}")
 
+    _AUTOINDEX_SIGS = re.compile(
+        r'index of /|<title>\s*index of|parent directory</a>|\[to parent directory\]|'
+        r'directory listing for',
+        re.I
+    )
+
+    async def _backtrack_dirs(self, session, crawl_delay: float = 0.0):
+        """Walk UP from every path the forward crawl found, probing ancestor
+        directories it never visited directly.
+
+        A pure link-following crawler only ever requests what something else
+        links to — if every reference to /js/ is an individual <script
+        src="/js/foo.min.js">, the crawler fetches foo.min.js and never once
+        requests /js/ itself. But /js/ (or /components/, or /api/, or any
+        ancestor of it) may be directly reachable and either expose an
+        autoindex listing (more files nobody linked to) or just respond
+        differently than a real 404 — both are attack surface a forward-only
+        crawl misses entirely. This mirrors what a directory brute-forcer
+        does against *known* paths instead of a wordlist: for every file the
+        crawl already found, check every directory above it, once each
+        (deduped globally, so a directory shared by 50 files is probed once).
+
+        Soft-404/SPA-catch-all filtering reuses the same canary technique as
+        the sensitive-file and wordlist probes: one throwaway request per
+        origin for a path that can't possibly exist, used as a baseline to
+        reject servers that return 200 for everything.
+        """
+        if not self.cfg.enable_backtrack:
+            return
+
+        candidates: Set[str] = set()
+        seen_paths = ({urlparse(ep["url"]).path for ep in self.store.endpoints.values()} |
+                      {urlparse(u).path for u in self.visited})
+        for path in seen_paths:
+            segs = [s for s in path.split("/") if s]
+            if not segs:
+                continue
+            if "." in segs[-1]:
+                segs = segs[:-1]          # drop the filename, keep its directory
+            while segs:
+                # Add the CURRENT directory level before popping up to the
+                # next one, so the immediate parent is always included, not
+                # just grandparent-and-above (e.g. /js/one.min.js -> /js/
+                # first, then keep walking up from there).
+                candidates.add("/" + "/".join(segs) + "/")
+                segs = segs[:-1]
+
+        candidates = {c for c in candidates
+                      if normalize(urljoin(self.target, c)) not in self.visited}
+        candidates.discard("/")            # root was already fetched up front
+        if not candidates:
+            return
+
+        self.emit.always_info(
+            f"[Backtrack] Probing {len(candidates)} parent director"
+            f"{'y' if len(candidates) == 1 else 'ies'} never visited directly…"
+        )
+
+        origin = f"{urlparse(self.target).scheme}://{urlparse(self.target).netloc}"
+        canary_slug = hashlib.md5(f"{origin}-bt-{random.random()}".encode()).hexdigest()[:16]
+        canary_url  = f"{origin}/{canary_slug}-nonexistent-bt/"
+        c_s, c_hdrs, c_body = await fetch(session, "GET", canary_url, self.rl)
+        canary = None
+        if c_body and c_s in (200, 206):
+            canary = {
+                "hash": hashlib.md5(c_body.encode(errors="ignore")).hexdigest(),
+                "len": len(c_body),
+                "is_html": "text/html" in ((c_hdrs or {}).get("content-type", "") or "").lower(),
+            }
+
+        sem = asyncio.Semaphore(min(self.cfg.concurrency, 10))
+        found = 0
+
+        async def _probe_dir(path):
+            nonlocal found
+            url = urljoin(self.target, path)
+            if not self.is_valid(url):
+                return
+            async with sem:
+                s, hdrs, body = await fetch(session, "GET", url, self.rl)
+            self.visited.add(normalize(url))
+            if s in (401, 403):
+                self.store.add_endpoint(url, source="Backtrack", score=Conf.LOW)
+                self.emit.info(f"[Backtrack] {s} (access-controlled) -> {url}")
+                return
+            if s not in (200, 206):
+                return
+            if body:
+                if canary and canary["hash"] == hashlib.md5(body.encode(errors="ignore")).hexdigest():
+                    return
+                if (canary and canary["is_html"] and canary["len"] > 200
+                        and "text/html" in ((hdrs or {}).get("content-type", "") or "").lower()
+                        and abs(len(body) - canary["len"]) / canary["len"] < 0.03):
+                    return
+                if Extractor.is_soft_404(body, s):
+                    return
+            is_listing = bool(self._AUTOINDEX_SIGS.search(body or ""))
+            label = "DirListing" if is_listing else "Backtrack"
+            self.store.add_endpoint(url, source=label,
+                                    score=Conf.HIGH if is_listing else Conf.MEDIUM)
+            sev = "HIGH" if is_listing else "MEDIUM"
+            tag = "[DirListing]" if is_listing else "[Backtrack]"
+            suffix = "  (autoindex exposed)" if is_listing else "  (accessible, unlinked)"
+            self.emit.warn_sev(f"{tag} {s} -> {url}{suffix}", sev)
+            found += 1
+            # Feed whatever this directory exposes (listing entries, or a
+            # real index page's own links) straight into the normal crawl
+            # queue so it gets fetched and parsed like anything else found.
+            if body:
+                page_path = urlparse(url).path
+                for href in re.findall(r'href=["\']([^"\'#][^"\']*)["\']', body, re.I):
+                    stripped = href.strip()
+                    if stripped in ("..", "../", "."):
+                        continue                   # parent/self link — already a candidate on its own
+                    if stripped.startswith("?"):
+                        # mod_autoindex column-sort links (Apache's "?C=N;O=A"
+                        # etc. for Name/Modified/Size/Description, ascending/
+                        # descending) — same listing, different sort order,
+                        # not new content. Any query-only href resolving to
+                        # the SAME directory is this, regardless of the
+                        # exact param names a given autoindex theme uses.
+                        if urlparse(urljoin(url, stripped)).path == page_path:
+                            continue
+                    nxt = urljoin(url, href)
+                    if self.is_valid(nxt):
+                        self._queue_url(nxt, 1, label)
+
+        await asyncio.gather(*(_probe_dir(c) for c in candidates))
+
+        if not found:
+            self.emit.info("[Backtrack] No additional parent directories accessible")
+            return
+
+        self.emit.always_success(
+            f"[Backtrack] {found} previously-unlinked director"
+            f"{'y' if found == 1 else 'ies'} accessible — crawling what they expose"
+        )
+        if not self.queue.empty():
+            workers = [asyncio.create_task(self._worker(session, i, crawl_delay))
+                       for i in range(min(self.cfg.concurrency, 10))]
+            await self.queue.join()
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
     async def run(self):
         req_headers = {
             "User-Agent": self.cfg.user_agent,
@@ -8727,7 +8945,13 @@ class Spider:
 
                     _t_crawl = time.time() - _t_phase_start
                     _t_phase_start = time.time()
-                                              
+
+                # ── Parent-directory backtracking ──────────────────────
+                # Forward crawl is done; now walk UP from everything it
+                # found to probe ancestor directories nothing ever linked
+                # to directly (see _backtrack_dirs docstring).
+                await self._backtrack_dirs(session, crawl_delay)
+
                 # ── Deep SPA: multi-page Playwright crawl ──────────────
                 # After BFS crawl completes, revisit every discovered
                 # HTML page in a real browser to capture background
@@ -9167,6 +9391,11 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Skip BFS link crawling — run only recon/probe modules "
                             "(robots, sitemap, wordlist, subdomains, and any enabled "
                             "opt-in probes: admin, sensitive-files, wayback)")
+    flags.add_argument("--no-backtrack",  "-k", action="store_true",
+                       help="Disable parent-directory backtracking (after the crawl, probing "
+                            "every ancestor directory of every discovered path — e.g. finding "
+                            "/js/ open after only ever seeing individual /js/*.min.js hits — "
+                            "and crawling whatever it turns up). On by default.")
 
     scope = p.add_argument_group(f"{C.CY}Scope{C.RST}")
     scope.add_argument("--subdomains",        "-b", action="store_true",
@@ -9235,6 +9464,12 @@ def main():
     # Machine-pipe mode: explicit --pipe, or auto-detected because stdout
     # isn't a terminal (piped into another tool, or redirected to a file).
     pipe_mode = bool(args.pipe) or not sys.stdout.isatty()
+
+    # Point color detection at wherever the human report will actually be
+    # read: stderr (your real terminal) in pipe mode, stdout otherwise. Do
+    # this before constructing Emit, since it caches the color decision once.
+    global _COLOR_STREAM
+    _COLOR_STREAM = sys.stderr if pipe_mode else sys.stdout
 
     # No --format given: default to plain URLs when piped/redirected (what
     # httpx, nuclei, and basically everything downstream actually wants),
@@ -9324,6 +9559,9 @@ def main():
         _pf("Screenshots",
             f"enabled ({args.screenshot or 'standard'})" if args.screenshot else "disabled",
             C.G if args.screenshot else C.GR)
+        _pf("Dir Backtracking",
+            "disabled" if args.no_backtrack else "enabled",
+            C.GR if args.no_backtrack else C.G)
         if getattr(args, "ctf", False):
             if args.concurrency == 12:
                 args.concurrency = 20
@@ -9403,6 +9641,7 @@ def main():
             wordlist_recursive = args.wordlist_recursive,
             wordlist_max_depth = args.wordlist_depth,
             no_crawl          = args.no_crawl,
+            enable_backtrack  = not args.no_backtrack,
             ctf_flag_templates = [t.strip() for t in args.ctf_flag.split(",") if t.strip()]
                                  if args.ctf_flag else [],
             extra_scope       = [h.strip() for h in args.scope.split(",") if h.strip()]
