@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hellhound-spider"
+version = "14.1"
+description = "Fully autonomous web crawler for security testing — maps endpoints, parameters, and security issues across traditional and SPA web applications."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "L4ZZ3RJ0D" }
+]
+keywords = [
+    "security", "pentest", "crawler", "web-crawler", "spa", "recon",
+    "reconnaissance", "bug-bounty", "ctf", "attack-surface", "endpoint-discovery",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+
+dependencies = [
+    "aiohttp>=3.9",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+spa = [
+    "playwright>=1.40",
+    "playwright-stealth>=1.0",
+]
+bypass = [
+    "patchright>=1.40",
+]
+dns = [
+    "dnspython>=2.4",
+]
+full = [
+    "hellhound-spider[spa,bypass,dns]",
+]
+
+[project.urls]
+Homepage = "https://github.com/project-hellhound-org/hellhound-spider"
+Changelog = "https://github.com/project-hellhound-org/hellhound-spider/blob/main/CHANGELOG.md"
+Issues = "https://github.com/project-hellhound-org/hellhound-spider/issues"
+
+[project.scripts]
+spider = "hellhound_spider.spider:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

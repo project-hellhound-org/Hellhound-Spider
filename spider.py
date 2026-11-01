@@ -9119,8 +9119,12 @@ def _auto_save(store: Store, target: str, out_path: Optional[str],
             emit.warn(f"[Report] JSON save failed: {e}")
             json_path = ""
 
-                                                                  
-    if out_path and fmt != "json":
+    # Only write the --format copy if it targets a *different* path than
+    # the JSON write above — otherwise (e.g. -o report.json combined with
+    # a non-json --format, which pipe mode's "urls" default makes easy to
+    # hit by accident) this used to silently overwrite the just-written
+    # JSON with the other format, under a .json filename, with no error.
+    if out_path and fmt != "json" and out_path != json_path:
         try:
             Path(out_path).write_text(store.export(target, fmt=fmt))
             emit.always_info(f"[Report] {fmt.upper()} saved → {out_path}")
@@ -9308,7 +9312,7 @@ def _check_for_updates(emit) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="hellhound_spider",
+        prog="spider",
         description=(
             f"{C.R}{C.B}Hellhound Spider v{VERSION}{C.RST}  —  "
             "SPA + Non-SPA Web Crawler & Endpoint Discoverer"

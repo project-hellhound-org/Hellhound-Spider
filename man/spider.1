@@ -1,4 +1,4 @@
-.TH SPIDER 1 "2026-07-04" "Hellhound Spider v13.21" "User Commands"
+.TH SPIDER 1 "2026-11-01" "Hellhound Spider v14.1" "User Commands"
 .SH NAME
 spider \- SPA and non-SPA web crawler, endpoint discoverer, and attack-surface mapper
 .SH SYNOPSIS
@@ -20,6 +20,30 @@ certificate transparency logs, and probes for admin panels, sensitive
 files, GraphQL and OpenAPI endpoints, and directories from a
 user-supplied wordlist. Every discovered URL is recorded with its HTTP
 method, confidence level, and observed parameters.
+.PP
+After the forward crawl completes,
+.B spider
+also walks back up every discovered path to probe ancestor directories
+that were never directly linked to \(em for example, finding
+.I /js/
+open to directory listing after only ever seeing individual
+.I /js/*.min.js
+hits \(em the way a recursive directory brute-forcer would. This is on
+by default; see
+.BR \-k .
+.PP
+.B spider
+auto-detects whether its stdout is a terminal or a pipe. When piped
+(e.g.
+.BR "spider target.com | httpx" ),
+the banner, progress animation, and full colour-coded report are routed
+to stderr, and stdout carries only the structured report in the format
+requested with
+.BR \-f
+(plain newline-separated URLs by default). No extra flag is required
+for this; see the
+.B Piping
+section below.
 .PP
 The output includes a structured JSON report and a colour-coded
 terminal summary covering: response headers and missing security
@@ -142,6 +166,35 @@ probing, wordlist-based discovery (\fB\-\-wordlist\fR), subdomain
 enumeration (\fB\-\-subdomains\fR), and Wayback Machine history mining.
 Useful for fast, targeted reconnaissance without traversing the site's
 link graph.
+.TP
+.BR \-k ", " \-\-no\-backtrack
+Disable parent-directory backtracking. On by default: after the crawl,
+.B spider
+probes every ancestor directory of every discovered path (e.g. finding
+.I /js/
+open after only ever seeing individual
+.IR /js/*.min.js " hits)," and crawls whatever that turns up \(em
+listed directories, in particular, often expose files the forward
+crawl never had a link to.
+.SS "Piping"
+.TP
+.BR \-Q ", " \-\-pipe
+Force machine-pipe mode: the banner, progress animation, and full
+colour-coded report are routed to stderr; stdout carries only the
+structured report, in the format chosen with
+.BR \-f .
+This is auto-enabled whenever stdout is not a terminal, so
+.B "spider target.com | httpx"
+or
+.B "spider target.com | nuclei -t cves/"
+already work with no flag at all \(em pass
+.B \-Q
+explicitly to force clean stdout output even when stdout
+.I is
+a terminal. With multiple targets read from stdin and the default JSON
+format, each target's report is written as one compact line (JSONL).
+When piping, \fB\-f\fR defaults to \fBurls\fR instead of \fBjson\fR,
+since that's what most downstream tools expect.
 .SS "Scope"
 .TP
 .BR \-\-subdomains
@@ -231,6 +284,9 @@ SPA scan with headless browser interaction enabled:
 .TP
 Import a HAR capture and diff against a previous report:
 .B spider \-H session.har \-D previous_report.json http://target.example
+.TP
+Pipe discovered URLs straight into another tool, no extra flag needed:
+.B "spider http://target.example | httpx"
 .SH FILES
 .TP
 .I spider_<host>_<timestamp>.json
