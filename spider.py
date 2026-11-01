@@ -227,11 +227,17 @@ class CLIAnimator:
 
     def _clear(self):
         # Erase the in-place spinner row before anything else writes here.
+        # Use the terminal's own erase-in-line control sequence (\x1b[2K)
+        # rather than counting characters and writing that many spaces:
+        # manual space-padding has to correctly guess the rendered width
+        # of every character involved, and that guess breaks the moment a
+        # terminal/font renders some glyph wider than Python's len() says
+        # (Nerd Font icon ranges are a documented case of this, and it can
+        # change across terminal versions). \x1b[2K needs no such guess —
+        # the terminal erases the row itself, however wide it actually drew.
         if not self._nc and self._last_line:
             with self.emit.lock:
-                cols = self._term_width()
-                clear_w = min(len(_strip(self._last_line)) + 15, cols - 1)
-                sys.stdout.write("\r" + " " * clear_w + "\r")
+                sys.stdout.write("\r\x1b[2K")
                 sys.stdout.flush()
 
     def run(self):
@@ -295,22 +301,12 @@ class CLIAnimator:
 
                 line = f"\r  {anim_label:<{label_w}}  {bar}  {stats}" if not self._nc else f"\r  {disp_label} {self.current}/{self.total}"
 
-                if self._last_line and len(_strip(line)) < len(_strip(self._last_line)):
-                    pad = " " * (len(_strip(self._last_line)) - len(_strip(line)) + 5)
-                else:
-                    pad = "    "
-                # Never let the trailing clear-padding itself push the
-                # visible line past the terminal width — that would cause
-                # the exact same wrap-and-lose-the-row problem it exists
-                # to prevent.
-                visible_now = len(_strip(line))
-                max_pad = max(0, (cols - 1) - visible_now)
-                if len(pad) > max_pad:
-                    pad = " " * max_pad
-
+                # Erase the row with the terminal's own control sequence
+                # instead of overwriting with counted spaces — see _clear()
+                # for why manual width-counting is the fragile part here.
                 self._last_line = line
                 with self.emit.lock:
-                    sys.stdout.write(line + pad)
+                    sys.stdout.write("\x1b[2K" + line)
                     sys.stdout.flush()
 
                 time.sleep(0.06)
@@ -331,9 +327,7 @@ class Emit:
         with self.lock:
             if self.animator.active:
                 if self.animator._last_line:
-                    cols = self.animator._term_width()
-                    clear_w = min(len(_strip(self.animator._last_line)) + 15, cols - 1)
-                    sys.stdout.write("\r" + " " * clear_w + "\r")
+                    sys.stdout.write("\r\x1b[2K")
                 print(_strip(line) if self._nc else line, flush=True)
             else:
                 print(_strip(line) if self._nc else line, flush=True)
