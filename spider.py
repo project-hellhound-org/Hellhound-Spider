@@ -61,7 +61,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "14.0"
+VERSION      = "14.1"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]
@@ -190,6 +190,22 @@ class CLIAnimator:
         self._last_line = None
         self._thread = None
 
+    @staticmethod
+    def _term_width():
+        # The whole animator renders one line with \r in place. If that
+        # line is wider than the real terminal, it auto-wraps onto a
+        # second row — and \r then only rewinds to the start of *that*
+        # row, not the row the line actually began on. Every redraw after
+        # that leaves a stray blank/partial row behind, which is exactly
+        # what showed up as "gaps" in the live feed on narrower terminals.
+        # So every component below is sized to the real terminal width,
+        # not a fixed constant.
+        try:
+            w = shutil.get_terminal_size(fallback=(100, 24)).columns
+        except Exception:
+            w = 100
+        return max(60, min(w, 200))
+
     def start_anim(self, label, total=0):
         self.label = label
         self.total = total
@@ -210,16 +226,12 @@ class CLIAnimator:
         if label: self.label = label
 
     def _clear(self):
-        # \x1b[2K erases the WHOLE current line regardless of its length,
-        # so there's no need to guess a padding width (the old "overwrite
-        # with N spaces" approach broke whenever the line was longer than
-        # the terminal was wide: the overwrite-string itself wrapped onto a
-        # second row, "\r" only rewound to that wrapped row, and subsequent
-        # redraws left stray blank rows behind — the live-crawl spacing
-        # glitch).
+        # Erase the in-place spinner row before anything else writes here.
         if not self._nc and self._last_line:
             with self.emit.lock:
-                sys.stdout.write("\r\x1b[2K")
+                cols = self._term_width()
+                clear_w = min(len(_strip(self._last_line)) + 15, cols - 1)
+                sys.stdout.write("\r" + " " * clear_w + "\r")
                 sys.stdout.flush()
 
     def run(self):
@@ -230,10 +242,22 @@ class CLIAnimator:
                 continue
             try:
                 t = time.time() - start_time
-                
-                                          
+
+                # Budget every piece of the line against the real terminal
+                # width (minus a margin so the line never touches the very
+                # last column, which is what triggers auto-wrap). Leading
+                # indent(2) + 2 gaps(2) + 2 gaps(2) + stats field(~7).
+                cols = self._term_width()
+                budget = max(cols - 10, 24)
+                stats_w = 7
+                label_w = 25 if budget >= 70 else max(10, min(25, (budget - stats_w - 6) // 2))
+                bar_w = max(6, budget - (2 + label_w + 2 + 2 + stats_w))
+                bar_w = min(bar_w, 50)
+
+                disp_label = self.label if len(self.label) <= label_w else self.label[:label_w - 1] + "…"
+
                 anim_label = ""
-                for i, c in enumerate(self.label):
+                for i, c in enumerate(disp_label):
                     if not c.isalpha():
                         anim_label += c
                         continue
@@ -243,13 +267,17 @@ class CLIAnimator:
                     else:
                         anim_label += f"{C.RD}{c.lower()}{C.RST}" if not self._nc else c.lower()
 
-
-                # Kept narrow on purpose: the old 50-char bar pushed the
-                # whole animated line past ~80-90 visible columns, which
-                # wraps in a typical/narrow terminal and breaks the \r-based
-                # redraw math below (see _clear()'s comment).
-                bar_w = 20
-                chars = "⡀⡄⡆⡇⣇⣧⣷⣿"
+                # Plain ASCII only. The previous Braille-block bar
+                # (U+2800-28FF) measures as 1 column per char in Python's
+                # len(), but several terminal/font combinations (Ghostty's
+                # fallback font for that block, confirmed by direct testing)
+                # actually render it at 2 columns per char. That silently
+                # doubles the real on-screen width of a line whose budget
+                # was computed assuming 1-per-char, blowing past the
+                # terminal edge regardless of how carefully that budget is
+                # calculated — and only on the terminals that double it.
+                # Plain ASCII has no such ambiguity anywhere.
+                chars = ".-=+*#%@"
                 bar = ""
                 for i in range(bar_w):
                     idx = int((math.sin(t * 5 + i * 0.2) + 1) / 2 * (len(chars) - 1))
@@ -258,7 +286,6 @@ class CLIAnimator:
                 if self.total:
                     stats = f"{C.W}{self.current:>3}/{self.total:<3}{C.RST}" if not self._nc else f"{self.current}/{self.total}"
                 else:
-                                                                 
                     v = math.sin(t * 8)
                     if not self._nc:
                         c = C.R if v > 0 else C.RD
@@ -266,51 +293,47 @@ class CLIAnimator:
                     else:
                         stats = "---"
 
-                line = f"\r  {anim_label:<25}  {bar}  {stats}" if not self._nc else f"\r  {self.label} {self.current}/{self.total}"
+                line = f"\r  {anim_label:<{label_w}}  {bar}  {stats}" if not self._nc else f"\r  {disp_label} {self.current}/{self.total}"
+
+                if self._last_line and len(_strip(line)) < len(_strip(self._last_line)):
+                    pad = " " * (len(_strip(self._last_line)) - len(_strip(line)) + 5)
+                else:
+                    pad = "    "
+                # Never let the trailing clear-padding itself push the
+                # visible line past the terminal width — that would cause
+                # the exact same wrap-and-lose-the-row problem it exists
+                # to prevent.
+                visible_now = len(_strip(line))
+                max_pad = max(0, (cols - 1) - visible_now)
+                if len(pad) > max_pad:
+                    pad = " " * max_pad
 
                 self._last_line = line
-                # \x1b[K erases from the cursor to the end of the line, so
-                # whatever was there before (even if longer) is cleanly
-                # gone — no padding-width guess needed.
                 with self.emit.lock:
-                    sys.stdout.write(line + "\x1b[K")
+                    sys.stdout.write(line + pad)
                     sys.stdout.flush()
-                
+
                 time.sleep(0.06)
             except Exception:
                 time.sleep(0.5)
 
-                                                                        
-      
-                                                                        
 
 class Emit:
-\
-\
-\
-\
-\
-\
-       
-
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self._nc     = _no_color()
         self.lock    = threading.Lock()
         self.animator = CLIAnimator(self)
 
-                                                                        
-
     def _w(self, line: str):
-        # Interleaving a normal log line with the animator's live-redrawn
-        # progress line: erase whatever the animator currently has on the
-        # line (\x1b[2K — the full line, not a guessed-length overwrite)
-        # before printing, so the animator's next tick redraws cleanly on
-        # its own fresh line afterwards instead of leaving stray blank rows.
+        # Clear the animator's in-place spinner row (if active) before
+        # printing real content, so the two never share a row.
         with self.lock:
             if self.animator.active:
                 if self.animator._last_line:
-                    sys.stdout.write("\r\x1b[2K")
+                    cols = self.animator._term_width()
+                    clear_w = min(len(_strip(self.animator._last_line)) + 15, cols - 1)
+                    sys.stdout.write("\r" + " " * clear_w + "\r")
                 print(_strip(line) if self._nc else line, flush=True)
             else:
                 print(_strip(line) if self._nc else line, flush=True)
@@ -349,12 +372,21 @@ class Emit:
     def always_info(self, msg: str):
         self._w(f"{C.CY}[*]{C.RST} {msg}")
 
+    @staticmethod
+    def trunc_url(url: str, maxlen: int = 65) -> str:
+
+
+
+        if not url or len(url) <= maxlen:
+            return url
+        head = int(maxlen * 0.5)
+        tail = maxlen - head - 1
+        return url[:head] + "…" + url[-tail:]
+
     def crawl_feed(self, ftype: str, method: str = "GET", url: str = "", status: int = 0, size_bytes: int = 0, extra: List[str] = None):
-                                                                
-                                                                         
-        disp_url = url
-        if len(url) > 65:
-            disp_url = url[:32] + "…" + url[-30:]
+
+
+        disp_url = self.trunc_url(url)
 
         if self._nc:
             if ftype == "Found":
@@ -434,7 +466,8 @@ class Emit:
         else:
             dc = C.GD; icon = "✔"
         status = f"{C.G}crawling{C.RST}" if queued else f"{C.GR}skipped{C.RST}"
-        self._w(f"  {C.GR}├─{C.RST} {dc}{icon} {display_dir:<10}{C.RST} {C.W}{path:<40}{C.RST}  {C.GR}↳{C.RST} {status}")
+        disp_path = self.trunc_url(path, 40)
+        self._w(f"  {C.GR}├─{C.RST} {dc}{icon} {display_dir:<10}{C.RST} {C.W}{disp_path:<40}{C.RST}  {C.GR}↳{C.RST} {status}")
 
     def robots_comment_leak(self, comment: str):
                                                                 
@@ -8628,7 +8661,7 @@ class Spider:
             self.visited.add(normalize(url))
             if s in (401, 403):
                 self.store.add_endpoint(url, source="Backtrack", score=Conf.LOW)
-                self.emit.info(f"[Backtrack] {s} (access-controlled) -> {url}")
+                self.emit.info(f"[Backtrack] {s} (access-controlled) -> {self.emit.trunc_url(url, 42)}")
                 return
             if s not in (200, 206):
                 return
@@ -8648,7 +8681,7 @@ class Spider:
             sev = "HIGH" if is_listing else "MEDIUM"
             tag = "[DirListing]" if is_listing else "[Backtrack]"
             suffix = "  (autoindex exposed)" if is_listing else "  (accessible, unlinked)"
-            self.emit.warn_sev(f"{tag} {s} -> {url}{suffix}", sev)
+            self.emit.warn_sev(f"{tag} {s} -> {self.emit.trunc_url(url, 40)}{suffix}", sev)
             found += 1
             # Feed whatever this directory exposes (listing entries, or a
             # real index page's own links) straight into the normal crawl
@@ -8949,8 +8982,14 @@ class Spider:
                 # ── Parent-directory backtracking ──────────────────────
                 # Forward crawl is done; now walk UP from everything it
                 # found to probe ancestor directories nothing ever linked
-                # to directly (see _backtrack_dirs docstring).
+                # to directly (see _backtrack_dirs docstring). Keep the
+                # animator running through this phase too — it was
+                # stopped after the crawl above, and without it ticking,
+                # the network-wait time between backtrack probe bursts is
+                # dead air with nothing being written.
+                self.emit.animator.start_anim("Backtracking Directories")
                 await self._backtrack_dirs(session, crawl_delay)
+                self.emit.animator.stop_anim()
 
                 # ── Deep SPA: multi-page Playwright crawl ──────────────
                 # After BFS crawl completes, revisit every discovered
