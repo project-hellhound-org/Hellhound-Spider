@@ -15,6 +15,9 @@
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
+<p align="center">
+  <a href="https://devlist.app/listings/hellhound-spider"><img src="https://devlist.app/badges/listed-on-devlist-medium.svg" alt="Listed on DevList" width="132" height="32"/></a>
+</p>
 
 ---
 
