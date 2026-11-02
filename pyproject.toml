@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hellhound-spider"
-version = "14.1"
+version = "14.2"
 description = "Autonomous web crawler and recon engine for security testing — SPA + Non-SPA crawling, header analysis, subdomain enumeration, and intelligence classification"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,12 @@ spa = [
     "playwright>=1.40.0",
     "playwright-stealth>=1.0.6",
     "patchright>=0.5.0",
+]
+dns = [
+    "dnspython>=2.4.0",
+]
+full = [
+    "hellhound-spider[spa,dns]",
 ]
 
 [project.urls]

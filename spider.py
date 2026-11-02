@@ -61,7 +61,7 @@ except Exception:
           
                                                                         
 
-VERSION      = "14.1"
+VERSION      = "14.2"
 __author__   = "Sree Danush S (L4ZZ3RJ0D)"
 __license__  = "GPLv3"
 __credits__  = ["L4ZZ3RJ0D"]

@@ -2,6 +2,19 @@
 
 All notable changes to Hellhound Spider are documented here.
 
+## [14.2] — 2026-11-02
+
+### Added
+- Published to PyPI as `hellhound-spider` — `pip install hellhound-spider`
+  installs the core crawler directly, no git clone needed.
+- `[spa]`, `[dns]`, and `[full]` extras for optional Playwright/Patchright
+  SPA support and full DNS intel (dnspython) via pip.
+
+### Changed
+- README's Installation section now documents the pip path alongside the
+  existing `install.sh` source install, including what pip can't install
+  for you (the Playwright browser binary itself, and WhatWeb).
+
 ## [14.1] — 2026-11-01
 
 ### Fixed

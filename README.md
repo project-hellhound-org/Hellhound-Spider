@@ -10,7 +10,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/version-14.1-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-14.2-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/pypi-hellhound--spider-blue?style=flat-square&logo=pypi&logoColor=white"/>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"/>
 </p>
@@ -29,7 +30,25 @@ Output pipes straight into other tools — `spider https://target.com | httpx` j
 
 ## Installation
 
-### Linux / macOS
+### via pip (any OS)
+
+```bash
+pip install hellhound-spider
+```
+
+This gets you the core crawler — HTTP-only scanning (`--no-playwright`) works right away. Everything else is opt-in, since not everyone needs a headless browser just to crawl:
+
+```bash
+pip install "hellhound-spider[spa]"   # SPA scanning: Playwright + Patchright
+playwright install chromium           # the browser binary itself — not a pip package, separate ~150MB download
+
+pip install "hellhound-spider[dns]"   # full DNS intel (SPF/DMARC/MX via dnspython)
+pip install "hellhound-spider[full]"  # spa + dns together
+```
+
+One thing pip genuinely can't install for you: **WhatWeb** (optional technology fingerprinting) is a system binary, not a Python package — `apt install whatweb` (or your distro's equivalent) if you want it. Spider runs fine without it either way.
+
+### From source (Linux / macOS)
 
 ```bash
 git clone https://github.com/project-hellhound-org/hellhound-spider.git
@@ -38,27 +57,17 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer creates an isolated virtual environment (`.venv`) and a system-wide `spider` wrapper:
+The installer creates an isolated virtual environment (`.venv`), handles Playwright/Patchright/WhatWeb for you interactively, and installs a system-wide `spider` wrapper — this is the same thing `pip install` gives you, just with the optional pieces walked through for you instead of opt-in flags.
 
 ```bash
 spider https://target.com
 ```
 
-### Windows
-
-```bash
-git clone https://github.com/project-hellhound-org/hellhound-spider.git
-cd hellhound-spider
-pip install -e .                    # core install
-pip install -e ".[spa]"             # with Playwright SPA support
-playwright install chromium
-```
-
 ### Uninstall
 
 ```bash
-./uninstall.sh                   # Linux / macOS
-pip uninstall hellhound-spider   # Windows
+./uninstall.sh                   # if installed via install.sh
+pip uninstall hellhound-spider   # if installed via pip
 ```
 
 ---
