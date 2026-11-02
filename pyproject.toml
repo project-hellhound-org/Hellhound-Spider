@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hellhound-spider"
 version = "14.1"
-description = "Fully autonomous web crawler for security testing — maps endpoints, parameters, and security issues across traditional and SPA web applications."
+description = "Autonomous web crawler and recon engine for security testing — SPA + Non-SPA crawling, header analysis, subdomain enumeration, and intelligence classification"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 authors = [
-    { name = "L4ZZ3RJ0D" }
+    { name = "Sree Danush S", email = "lazzer@gmail.com" }
 ]
 keywords = [
     "security", "pentest", "crawler", "web-crawler", "spa", "recon",
@@ -30,24 +30,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "aiohttp>=3.9",
-    "beautifulsoup4>=4.12",
-    "lxml>=5.0",
+    "aiohttp>=3.9.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
 ]
 
 [project.optional-dependencies]
 spa = [
-    "playwright>=1.40",
-    "playwright-stealth>=1.0",
-]
-bypass = [
-    "patchright>=1.40",
-]
-dns = [
-    "dnspython>=2.4",
-]
-full = [
-    "hellhound-spider[spa,bypass,dns]",
+    "playwright>=1.40.0",
+    "playwright-stealth>=1.0.6",
+    "patchright>=0.5.0",
 ]
 
 [project.urls]
@@ -56,7 +48,10 @@ Changelog = "https://github.com/project-hellhound-org/hellhound-spider/blob/main
 Issues = "https://github.com/project-hellhound-org/hellhound-spider/issues"
 
 [project.scripts]
-spider = "hellhound_spider.spider:main"
+spider = "spider:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+py-modules = ["spider"]
+
+[tool.setuptools.data-files]
+"share/man/man1" = ["man/spider.1"]
