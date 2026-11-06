@@ -1,4 +1,4 @@
-.TH SPIDER 1 "2026-11-01" "Hellhound Spider v14.1" "User Commands"
+.TH SPIDER 1 "2026-11-06" "Hellhound Spider v14.3" "User Commands"
 .SH NAME
 spider \- SPA and non-SPA web crawler, endpoint discoverer, and attack-surface mapper
 .SH SYNOPSIS
@@ -82,9 +82,9 @@ Show all discovery logs, including low-confidence and informational events.
 .TP
 .BR \-C ", " \-\-cookie " " \fICOOKIE\fR
 Cookie string (e.g. \fB"session=42"\fR), dict-style string, or path to a cookie
-file. Used to scan authenticated areas of the application. Since the spider does
-not support automated form-login using username and password, you must manually
-log in via a browser and supply the session cookie here.
+file. Used to scan authenticated areas of the application. For an OAuth/SSO-gated
+target, or any login flow \fB\-\-login\fR can't handle, log in manually via a
+browser and supply the resulting session cookie here instead.
 .TP
 .BR \-a ", " \-\-auth " " \fIHEADER\fR
 Authorization header value, e.g. \fB"Bearer eyJ..."\fR.
@@ -96,6 +96,20 @@ this is for server-level basic authentication, not standard web login forms.
 .BR \-X ", " \-\-header " " \fI"NAME: VALUE"\fR
 Custom HTTP header, repeatable. Pass custom headers formatted as \fB"Name: Value"\fR.
 Useful for program-required tester identification or custom tokens.
+.TP
+.BR \-l ", " \-\-login " " \fIURL\fR
+URL of a classic HTML username/password login form. Spider parses the form,
+submits \fB\-n\fR/\fB\-z\fR (\fB\-\-login\-user\fR/\fB\-\-login\-pass\fR), and
+carries the resulting session cookies through the rest of the scan. Aborts
+with a clear report (no submission attempted) if the page redirects to a
+third-party OAuth/SSO provider or serves a CAPTCHA \(em neither is something
+Spider will try to bypass; use \fB\-\-cookie\fR instead for those.
+.TP
+.BR \-n ", " \-\-login\-user " " \fIUSERNAME\fR
+Username/email to submit with \fB\-l\fR/\fB\-\-login\fR.
+.TP
+.BR \-z ", " \-\-login\-pass " " \fIPASSWORD\fR
+Password to submit with \fB\-l\fR/\fB\-\-login\fR.
 .SS "Output"
 .TP
 .BR \-o ", " \-\-out " " \fIFILE\fR
