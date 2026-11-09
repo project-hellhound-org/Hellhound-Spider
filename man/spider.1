@@ -1,4 +1,4 @@
-.TH SPIDER 1 "2026-11-06" "Hellhound Spider v14.3" "User Commands"
+.TH SPIDER 1 "2026-11-09" "Hellhound Spider v14.5" "User Commands"
 .SH NAME
 spider \- SPA and non-SPA web crawler, endpoint discoverer, and attack-surface mapper
 .SH SYNOPSIS
@@ -119,6 +119,17 @@ always saved automatically regardless of this option.
 .BR \-f ", " \-\-format " " "{json,jsonl,csv,burp,urls,nuclei}"
 Extra output format for the report written to \fB\-\-out\fR
 (default: \fBjson\fR).
+.SS "Scan Resume"
+.TP
+.BR \-\-checkpoint " " \fIFILE\fR
+Periodically write crawl progress and findings to \fIFILE\fR (and once
+more on exit, even if the scan is interrupted or crashes), so it can be
+resumed later with \fB\-\-resume\fR.
+.TP
+.BR \-\-resume " " \fIFILE\fR
+Resume a previous scan from a \fB\-\-checkpoint\fR \fIFILE\fR.
+Already-visited URLs are skipped and all prior findings are carried into
+this run's final report.
 .SS "Feature Flags"
 .TP
 .BR \-P ", " \-\-no\-playwright
